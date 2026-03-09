@@ -31,8 +31,7 @@ description: |
 必须安装以下工具,先检查用户环境是否满足,不满足需要执行安装：
 ```bash
 # PDF处理
-pip3 install pdfplumber pdf2image pypytesseract pillow openpyxl pandas
-
+pip3 install pdfplumber pdf2image pypytesseract pillow openpyxl pandas python-docx reportlab pypdf pypdf2
 # YAML配置支持 (用于读取 config.yaml 配置文件)
 apt-get install python3-yaml
 
@@ -42,6 +41,7 @@ apt-get install tesseract-ocr tesseract-ocr-chi-sim poppler-utils
 # PDF转换（用于Excel/Word转PDF）
 apt-get install libreoffice-writer libreoffice-calc
 ```
+字体依赖, 识别中文发票需要安装常见的字体，如宋体、楷体、黑体、仿宋、仿宋_GB2312、方正小标宋简体、Arial等.
 
 ## 配置说明
 
@@ -228,6 +228,7 @@ python3 /root/.claude/skills/baoxiao/scripts/invoice_processor.py \
   --input-dir 发票 \
   --output-excel biaoge.xlsx \
   --work-dir . \
+  --merge-pdfs \
   --auto \
   --city-units "北京:总部,上海:分公司"
 ```

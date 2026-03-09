@@ -215,6 +215,10 @@ my-trip-reimbursement/
 
 ## 🚀 安装
 
+### 字体依赖
+识别中文发票需要安装常见的字体，如宋体、楷体、黑体、仿宋、仿宋_GB2312、方正小标宋简体、Arial等.
+
+
 ### 系统依赖
 
 ```bash
@@ -234,7 +238,7 @@ brew install tesseract tesseract-lang poppler libreoffice
 ### Python 依赖
 
 ```bash
-pip install pdfplumber pdf2image pytesseract pillow openpyxl pandas python-docx reportlab pypdf
+pip install pdfplumber pdf2image pytesseract pillow openpyxl pandas python-docx reportlab pypdf pypdf2
 ```
 
 ### OFD 转换工具（可选）
