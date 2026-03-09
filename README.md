@@ -448,6 +448,7 @@ python3 scripts/invoice_processor.py \
     --input-dir 发票 \
     --output-excel biaoge.xlsx \
     --work-dir . \
+    --merge-pdfs \
     --auto \
     --city-units "北京:总部,上海:分公司"
 ```
