@@ -28,6 +28,26 @@ description: |
 
 ## 前置要求
 
+### 环境检查缓存机制
+
+环境检查通过后，将在 `~/.cache/baoxiao/.env_checked` 写入标记文件。**下次运行时，若该文件存在，直接跳过环境检查，立即执行三阶段脚本**。
+
+```bash
+# 检查是否已通过环境检查
+if [ -f ~/.cache/baoxiao/.env_checked ]; then
+  echo "环境已验证，跳过检查，直接执行脚本"
+  # 直接进入三阶段执行
+else
+  # 执行环境检查和安装
+  # 通过后写入标记
+  mkdir -p ~/.cache/baoxiao && touch ~/.cache/baoxiao/.env_checked
+fi
+```
+
+若需重新验证环境（如更新依赖后），可手动删除标记文件：`rm ~/.cache/baoxiao/.env_checked`
+
+### 需要安装的工具
+
 必须安装以下工具,先检查用户环境是否满足,不满足需要执行安装：
 ```bash
 # PDF处理
@@ -121,6 +141,11 @@ apt-get install libreoffice-writer libreoffice-calc
 - 自动扫描输入目录中的 `*.ofd` 文件
 - 使用 `ofd2pdf` 工具转换为PDF格式
 - 跳过已存在的同名PDF（避免重复转换）
+- **转换失败处理**：若 `ofd2pdf` 转换任何文件失败，立即停止执行，向用户报告：
+  - 失败的文件名
+  - 失败原因（如：`ofd2pdf` 未安装、文件损坏、格式不支持等）
+  - 建议的解决方法（如：`apt-get install ofd2pdf` 或手动转换后重试）
+  - **不继续执行后续阶段**，等待用户处理后重新运行
 
 **2. 发票类型识别**
 - 使用内容分析（非文件名）识别发票类型

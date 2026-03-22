@@ -285,11 +285,15 @@ def add_transaction_numbers_to_pdf(input_pdf, output_pdf, trans_numbers):
         try:
             # 尝试使用常见的中文字体路径
             font_paths = [
-                '/usr/local/share/fonts/custom/msyh.ttc',  # 微软雅黑
-                '/usr/local/share/fonts/custom/SIMSUN.ttf',  # 宋体
-                '/usr/local/share/fonts/custom/simkai.ttf',  # 楷体
+                '/usr/share/fonts/custom/msyh.ttc',  # 微软雅黑
+                '/usr/share/fonts/custom/SIMSUN.ttf',  # 宋体
+                '/usr/share/fonts/custom/simkai.ttf',  # 楷体
+                '/usr/share/fonts/custom/simhei.ttf',  # 黑体
+                '/usr/share/fonts/truetype/droid/DroidSansFallbackFull.ttf',  # Droid Fallback
+                '/usr/local/share/fonts/custom/msyh.ttc',  # 微软雅黑(旧路径)
+                '/usr/local/share/fonts/custom/SIMSUN.ttf',  # 宋体(旧路径)
+                '/usr/local/share/fonts/custom/simkai.ttf',  # 楷体(旧路径)
                 '/usr/share/fonts/truetype/wqy/wqy-zenhei.ttc',
-                '/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf',
                 '/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc',
             ]
             for font_path in font_paths:
@@ -1137,33 +1141,54 @@ def process_invoices(input_dir, output_excel=None, sheet_name='sheet1', rename_f
     if ofd_files:
         print(f"[步骤0] 发现 {len(ofd_files)} 个OFD文件，开始转换...")
 
-        # 使用 bash 命令 ofd2pdf *.ofd 进行转换
-        # ofd2pdf 在当前目录生成PDF，需要使用完整路径调用
-        original_cwd = os.getcwd()
-        try:
-            os.chdir(input_dir)
-            conv_result = subprocess.run(
-                '/root/projs/Ofd2Pdf-main/ofd2pdf *.ofd',
-                shell=True,
-                capture_output=True,
-                text=True,
-                timeout=60
-            )
-            os.chdir(original_cwd)
+        # 使用 ofd2pdf 命令转换（需在PATH中，如 ~/apps/ofd2pdf）
+        ofd2pdf_bin = shutil.which('ofd2pdf')
+        if not ofd2pdf_bin:
+            print("  ✗ 错误：未找到 ofd2pdf 命令")
+            print("  原因：ofd2pdf 未安装或不在 PATH 中")
+            print("  解决：请安装 ofd2pdf 并确保其可在终端直接执行，然后重新运行")
+            sys.exit(1)
+        else:
+            original_cwd = os.getcwd()
+            try:
+                os.chdir(input_dir)
+                ofd_args = ' '.join(f'"{f}"' for f in ofd_files)
+                conv_result = subprocess.run(
+                    f'ofd2pdf {ofd_args}',
+                    shell=True,
+                    capture_output=True,
+                    text=True,
+                    timeout=60
+                )
+                os.chdir(original_cwd)
 
-            if conv_result.returncode == 0:
-                for ofd_file in ofd_files:
-                    pdf_name = os.path.splitext(ofd_file)[0] + '.pdf'
-                    pdf_path = os.path.join(input_dir, pdf_name)
-                    if os.path.exists(pdf_path):
-                        print(f"  ✓ {ofd_file} -> {pdf_name}")
-                    else:
-                        print(f"  ⚠ {ofd_file} 转换后PDF未找到")
-            else:
-                result['warnings'].append(f"OFD批量转换失败: {conv_result.stderr}")
-        except Exception as e:
-            os.chdir(original_cwd)
-            result['warnings'].append(f"OFD转换异常: {e}")
+                if conv_result.returncode == 0:
+                    for ofd_file in ofd_files:
+                        pdf_name = os.path.splitext(ofd_file)[0] + '.pdf'
+                        pdf_path = os.path.join(input_dir, pdf_name)
+                        if os.path.exists(pdf_path):
+                            print(f"  ✓ {ofd_file} -> {pdf_name}")
+                        else:
+                            print(f"  ✗ 错误：{ofd_file} 转换后未生成对应PDF")
+                            print(f"  原因：ofd2pdf 执行成功但输出文件缺失，文件可能已损坏或格式不支持")
+                            print(f"  解决：请手动转换该文件后重新运行")
+                            sys.exit(1)
+                else:
+                    print(f"  ✗ 错误：OFD文件转换失败")
+                    print(f"  原因：{conv_result.stderr.strip() or '未知错误（ofd2pdf 返回非零退出码）'}")
+                    print(f"  解决：请检查上述错误信息，或手动将OFD文件转换为PDF后重新运行")
+                    sys.exit(1)
+            except subprocess.TimeoutExpired:
+                os.chdir(original_cwd)
+                print(f"  ✗ 错误：OFD转换超时（超过60秒）")
+                print(f"  原因：文件过大或 ofd2pdf 程序无响应")
+                print(f"  解决：请手动转换OFD文件后重新运行")
+                sys.exit(1)
+            except Exception as e:
+                os.chdir(original_cwd)
+                print(f"  ✗ 错误：OFD转换异常：{e}")
+                print(f"  解决：请检查上述错误信息后重新运行")
+                sys.exit(1)
         print()
 
     # 收集所有PDF文件
