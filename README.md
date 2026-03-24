@@ -7,6 +7,7 @@
 
 ## 📋 目录
 
+- [工作原理](#工作原理)
 - [功能特性](#功能特性)
 - [用户需要提供的文件](#用户需要提供的文件)
 - [推荐的文件/文件夹结构](#推荐的文件文件夹结构)
@@ -14,7 +15,25 @@
 - [使用方法](#使用方法)
 - [详细功能说明](#详细功能说明)
 - [参数说明](#参数说明)
+- [Python API](#python-api)
 - [注意事项](#注意事项)
+
+---
+
+## 🎯 工作原理
+
+本工具采用**三阶段执行模型**，确保数据在写入前经过用户确认：
+
+```
+┌─────────────┐    ┌─────────────┐    ┌─────────────┐
+│  阶段1:提取  │ → │  阶段2:写入  │ → │  阶段3:合并  │
+└─────────────┘    └─────────────┘    └─────────────┘
+  发票识别            填写表格           PDF合并
+  数据提取            Word文档           最终输出
+  生成报告
+```
+
+**设计原因**：Python 非交互式执行无法暂停等待用户输入。三阶段设计允许用户在阶段1和阶段2之间复核并修改 `data_report.json` 文件。
 
 ---
 
@@ -215,6 +234,23 @@ my-trip-reimbursement/
 
 ## 🚀 安装
 
+### 环境检查缓存机制
+
+为避免重复检查环境，工具使用缓存机制：
+
+- 首次运行时检查依赖并写入标记文件 `~/.cache/baoxiao/.env_checked`
+- 后续运行若标记存在，**直接跳过环境检查，立即执行脚本**
+- 如需重新验证（如更新依赖后），手动删除标记：`rm ~/.cache/baoxiao/.env_checked`
+
+```python
+# 缓存检查逻辑
+if os.path.exists(os.path.expanduser("~/.cache/baoxiao/.env_checked")):
+    print("环境已验证，跳过检查，直接执行脚本")
+else:
+    # 执行环境检查和安装
+    # 通过后写入标记
+```
+
 ### 字体依赖
 识别中文发票需要安装常见的字体，如宋体、楷体、黑体、仿宋、仿宋_GB2312、方正小标宋简体、Arial等.
 
@@ -323,7 +359,8 @@ python3 scripts/invoice_processor.py \
 
 1. **OFD 文件转换**（如果存在）
    - 扫描发票文件夹中的 `*.ofd` 文件
-   - 自动转换为 PDF 格式
+   - 使用 `ofd2pdf` 工具自动转换为 PDF 格式
+   - **转换失败处理**：若任何文件转换失败，立即停止执行，报告失败的文件名、原因和建议解决方法
    - 跳过已存在的同名 PDF
 
 2. **微信支付账单处理**（如果存在）
@@ -382,6 +419,35 @@ python3 scripts/invoice_processor.py \
 ### 阶段 2：数据写入（`--write-data`）
 
 根据确认的数据报告，写入 Excel 报销表和 Word 审批文档。
+
+#### 未知城市处理流程
+
+如果 `data_report.json` 中的 `unknown_cities` 字段不为空，**必须先处理未知城市**才能继续。工具会暂停并询问用户：
+
+```
+⚠️ 发现以下未知城市需要处理:
+  - 纺阳
+
+已识别到的所有城市（共3个）：
+  - 北京 ✓ 已配置
+  - 沈阳 ✓ 已配置
+  - 纺阳 ⚠️ 未知
+
+请选择处理方式：
+1. 新增城市映射 - 将"纺阳"添加到config.yaml配置文件
+2. 修正城市名称 - 修改data_report.json（如"纺阳"→"沈阳"）
+3. 删除该城市 - 从data_report.json中移除"纺阳"
+
+请回复选项编号（1/2/3）...
+```
+
+| 选项 | 处理方式 | 适用场景 | 后续操作 |
+|------|---------|---------|---------|
+| **1. 新增** | 添加到 `config.yaml` | 新城市，需要长期使用 | 询问单位名称 → 写入配置 → 重新执行阶段2 |
+| **2. 修正** | 修改 `data_report.json` | OCR识别错误 | 询问正确城市名 → 修改报告 → 重新执行阶段2 |
+| **3. 删除** | 从报告中移除 | 发票识别错误或不是差旅目的地 | 确认删除 → 移除城市 → 重新执行阶段2 |
+
+> **提示**：显示所有已识别城市是为了帮助用户确认。例如"纺阳 ⚠️ 未知"而"沈阳 ✓ 已配置"，可判断"纺阳"是OCR错误，应选**选项2**修正为"沈阳"。
 
 **执行命令：**
 ```bash
@@ -536,7 +602,58 @@ python3 scripts/invoice_processor.py \
 
 ---
 
+## 🐍 Python API
+
+除了命令行，你也可以在 Python 代码中直接调用：
+
+```python
+import sys
+sys.path.insert(0, '/root/.claude/skills/baoxiao/scripts')
+from invoice_processor import process_invoices, generate_data_report, load_data_report
+
+# 阶段1: 数据提取
+result = process_invoices(
+    input_dir='发票',
+    output_excel=None,  # 阶段1不写入Excel
+    sheet_name='sheet1',
+    force_write=True
+)
+
+# 生成数据报告
+report = generate_data_report(result, 'data_report.json')
+
+# 检查是否需要复核
+if report['needs_review']:
+    print("⚠️ 发现以下问题需要人工复核:")
+    for warning in report['warnings']:
+        print(f"  - {warning}")
+    print("\n请修改 data_report.json 后，再执行阶段2")
+else:
+    print("✓ 数据无误，可以执行阶段2写入文档")
+
+# 阶段2: 数据写入（在确认数据后执行）
+# loaded = load_data_report('data_report.json')
+# write_to_excel('biaoge.xlsx', 'sheet1', loaded, loaded['dates'])
+```
+
+---
+
 ## ⚠️ 注意事项
+
+### data_report.json 字段说明
+
+阶段1生成的数据报告包含以下字段：
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `cities` | array | 提取的城市列表（可修改） |
+| `cities_str` | string | 城市字符串，顿号分隔（可修改） |
+| `unknown_cities` | array | 未知城市列表（未在config.yaml配置） |
+| `dates` | object | `earliest`最早日期, `latest`最晚日期 |
+| `amounts` | object | 各类发票金额：`jipiao`, `huoche`, `didi`, `zhusu`, `tuigai` |
+| `counts` | object | 各类发票数量 |
+| `warnings` | array | 数据校验警告信息 |
+| `needs_review` | boolean | 是否需要复核（有警告或未知城市时为true） |
 
 ### 微信支付账单
 
