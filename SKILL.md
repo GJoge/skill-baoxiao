@@ -80,15 +80,14 @@ apt-get install libreoffice-writer libreoffice-calc
    ```yaml
    # config.yaml
    city_units:
-     北京: 总部
-     上海: 分公司
-     广州: 办事处
+     城市A: 单位A
+     城市B: 单位B
+     城市C: 单位C
      # 根据需要添加更多...
    ```
 
 3. **配置文件位置**（按以下顺序查找）
-   - 当前工作目录 `./config.yaml`
-   - 脚本目录 `scripts/config.yaml`
+   - 脚本目录 `~/.claude/skills/baoxiao/scripts/config.yaml`
    - 用户配置目录 `~/.config/baoxiao/config.yaml`
 
 4. **安全提示**：`config.yaml` 包含敏感信息，**不要**提交到Git仓库（已加入 `.gitignore`）
@@ -98,7 +97,7 @@ apt-get install libreoffice-writer libreoffice-calc
 在阶段2命令中添加 `--city-units` 参数：
 
 ```bash
---city-units "北京:总部,上海:分公司,广州:办事处"
+--city-units "城市A:单位A,城市B:单位B,城市C:单位C"
 ```
 
 **优先级**：命令行参数 > 配置文件 > 空配置
@@ -154,7 +153,7 @@ apt-get install libreoffice-writer libreoffice-calc
 **3. 数据提取**
 - **金额**：提取"价税合计"小写金额
 - **日期**：提取航班/车次日期（机票日期使用OCR+pdfplumber双重校验）
-- **城市**：提取出发和到达城市（自动排除北京）
+- **城市**：提取出发和到达城市（自动排除出发地城市）
 
 **4. 数据校验**
 - 金额合理性检查（机票¥500-5000，火车¥50-2000等）
@@ -163,6 +162,25 @@ apt-get install libreoffice-writer libreoffice-calc
 - 滴滴文件区分（电子发票vs行程单）
 
 **阶段1输出**：`data_report.json` 数据报告文件
+
+```json
+{
+  "cities": ["城市X", "城市Y"],
+  "cities_str": "城市X、城市Y",
+  "unknown_cities": [],
+  "dates": { "earliest": "2025-11-26", "latest": "2025-11-28" },
+  "amounts": { "jipiao": 1250.00, "huoche": 450.00, "didi": 120.50, "zhusu": 800.00 },
+  "counts": { "jipiao": 2, "huoche": 1, "didi": 5 },
+  "warnings": [],
+  "needs_review": false
+}
+```
+
+**关于未知城市**：
+- 阶段1会自动检测识别到的城市是否在 `config.yaml` 中配置了单位
+- 未知城市会记录在 `data_report.json` 的 `unknown_cities` 字段中
+- 如果存在未知城市，`needs_review` 会被设置为 `true`
+- 阶段2执行前必须解决未知城市问题（见阶段2说明）
 
 ```bash
 python3 /root/.claude/skills/baoxiao/scripts/invoice_processor.py \
@@ -176,11 +194,71 @@ python3 /root/.claude/skills/baoxiao/scripts/invoice_processor.py \
 
 根据确认的数据报告，写入Excel报销表和Word审批文档。
 
+#### 未知城市处理流程（用户决策）
+
+在执行阶段2前，系统会检查 `data_report.json` 中的 `unknown_cities` 字段。如果发现未知城市，**必须暂停执行并询问用户**，由用户决定如何处理。
+
+系统将显示以下信息供用户参考：
+
+**⚠️ 发现以下未知城市需要处理：**
+```
+  - 城市A
+  - 城市B
+```
+
+**已识别到的所有城市（共X个）：**
+```
+  - 城市A ⚠️ 未知
+  - 城市B ⚠️ 未知
+  - 城市C ✓ 已配置
+```
+
+> **提示**：显示所有已识别城市是为了帮助用户确认未知城市的处理方式。例如，如果列表显示"纺阳 ⚠️ 未知"而"沈阳 ✓ 已配置"，用户可以判断"纺阳"是OCR识别错误，应选择**选项2（修正）**改为"沈阳"。
+
+**请用户选择处理方式（三选一）：**
+
+| 选项 | 处理方式 | 适用场景 |
+|------|---------|---------|
+| **1. 新增城市映射** | 将未知城市添加到 `config.yaml`，并指定对应单位 | 这是一个新城市，需要长期使用 |
+| **2. 修正城市名称** | 修改 `data_report.json` 中的城市名称（如"纺阳"→"沈阳"） | OCR识别错误，实际城市已存在于配置 |
+| **3. 删除该城市** | 从 `data_report.json` 的 `cities` 列表中移除此城市 | 发票识别错误或不是差旅目的地 |
+
+**执行示例：**
+
+```
+⚠️ 发现以下未知城市需要处理:
+  - 纺阳
+
+已识别到的所有城市（共3个）：
+  - 北京 ✓ 已配置
+  - 沈阳 ✓ 已配置
+  - 纺阳 ⚠️ 未知
+
+请选择处理方式：
+1. 新增城市映射 - 将"纺阳"添加到config.yaml配置文件
+2. 修正城市名称 - 修改data_report.json（如"纺阳"→"沈阳"）
+3. 删除该城市 - 从data_report.json中移除"纺阳"
+
+请回复选项编号（1/2/3）或描述您的选择...
+```
+
+**不同选择的后续操作：**
+
+- **选择1（新增）**：询问单位名称 → 添加到 `config.yaml` → 重新执行阶段2
+- **选择2（修正）**：询问正确的城市名称 → 修改 `data_report.json` → 重新执行阶段2
+- **选择3（删除）**：确认删除 → 从 `data_report.json` 移除 → 重新执行阶段2
+
+**注意事项：**
+- 必须解决所有未知城市后，才能继续执行阶段2
+- 修改配置文件后，技能会记住新的城市映射（长期有效）
+- 修改数据报告后，需要重新运行阶段2命令以加载更新后的数据
+
+
 #### Excel表格填写
 
 | 项目 | 数量单元格 | 金额单元格 | 日期单元格 | 说明 |
 |------|-----------|-----------|-----------|------|
-| 城市 | E4 | - | - | 多个城市用顿号分隔，如"成都、绵阳" |
+| 城市 | E4 | - | - | 多个城市用顿号分隔，如"城市X、城市Y" |
 | 火车 | E6 | F6 | - | 数量和金额 |
 | 机票 | E7 | F7 | J4(最早), M4(最晚) | 数量和金额，日期写入J4/M4 |
 | 退改 | E8 | F8 | - | 退改签费用 |
@@ -191,10 +269,10 @@ python3 /root/.claude/skills/baoxiao/scripts/invoice_processor.py \
 
 #### Word审批文档填写
 
-- **地点**：填写城市名称（如"地点：成都、绵阳"）
+- **地点**：填写城市名称（如"地点：城市X、城市Y"）
 - **到达单位**：根据城市自动填写对应单位
   - 从配置文件 `config.yaml` 读取城市到单位的映射
-  - 或通过 `--city-units` 参数指定，如 `"北京:总部,上海:分公司"`
+  - 或通过 `--city-units` 参数指定，如 `"城市A:单位A,城市B:单位B"`
 - **起止时间**：填写最早日期至最晚日期
 
 **阶段2命令**：
@@ -204,7 +282,7 @@ python3 /root/.claude/skills/baoxiao/scripts/invoice_processor.py \
   --output-excel biaoge.xlsx \
   --work-dir . \
   --write-data \
-  --city-units "北京:总部,上海:分公司,广州:办事处"
+  --city-units "城市M:单位M,城市N:单位N"
 ```
 
 ---
@@ -255,7 +333,7 @@ python3 /root/.claude/skills/baoxiao/scripts/invoice_processor.py \
   --work-dir . \
   --merge-pdfs \
   --auto \
-  --city-units "北京:总部,上海:分公司"
+  --city-units "城市A:单位A,城市B:单位B"
 ```
 
 ## 参数说明
@@ -267,7 +345,7 @@ python3 /root/.claude/skills/baoxiao/scripts/invoice_processor.py \
 | `--sheet` | Excel工作表名称 | 阶段2 |
 | `--work-dir` | 工作目录（存放docx等文件） | 阶段2、阶段3 |
 | `--report` | 数据报告文件路径 | 阶段1、阶段2（默认：`data_report.json`） |
-| `--city-units` | 城市到单位的映射，格式：`"北京:总部,上海:分公司"` | 阶段2 |
+| `--city-units` | 城市到单位的映射，格式：`"城市A:单位A,城市B:单位B"` | 阶段2 |
 | `--no-rename` | 不自动重命名发票文件 | 阶段1 |
 | `--extract-only` | 仅执行阶段1（提取数据） | - |
 | `--write-data` | 仅执行阶段2（写入数据） | - |
@@ -292,8 +370,9 @@ python3 /root/.claude/skills/baoxiao/scripts/invoice_processor.py \
 **data_report.json 示例：**
 ```json
 {
-  "cities": ["成都", "绵阳"],
-  "cities_str": "成都、绵阳",
+  "cities": ["城市X", "城市Y"],
+  "cities_str": "城市X、城市Y",
+  "unknown_cities": ["城市M"],
   "dates": { "earliest": "2025-11-26", "latest": "2025-11-28" },
   "amounts": { "jipiao": 1250.00, "huoche": 450.00, "didi": 120.50, "zhusu": 800.00 },
   "counts": { "jipiao": 2, "huoche": 1, "didi": 5 },
@@ -301,6 +380,16 @@ python3 /root/.claude/skills/baoxiao/scripts/invoice_processor.py \
   "needs_review": false
 }
 ```
+
+**字段说明：**
+- `cities`: 提取的城市列表（可用于修改）
+- `cities_str`: 城市字符串（可用于修改）
+- `unknown_cities`: 未知城市列表（未在config.yaml中配置）
+- `dates`: 最早和最晚日期
+- `amounts`: 各类发票金额
+- `counts`: 各类发票数量
+- `warnings`: 数据校验警告
+- `needs_review`: 是否需要复核（包含警告或未知城市时为true）
 
 ## 完整执行示例（分阶段）
 
@@ -355,9 +444,13 @@ else:
 
 **阶段2 - 数据写入**：
 - 读取 `data_report.json` 中的确认数据
+- **未知城市处理**：检查 `unknown_cities` 字段，如有未知城市，必须**暂停并询问用户**选择处理方式：
+  - **新增**：添加到 `config.yaml` 配置文件（长期有效）
+  - **修正**：修改 `data_report.json` 更正OCR错误（如"纺阳"→"沈阳"）
+  - **删除**：从 `data_report.json` 移除误识别的城市
+- 必须解决所有未知城市后才能继续执行
 - 填写Excel报销表和Word审批文档
 - 自动复制日期到sheet2
-- 需要指定城市到单位的映射（如 `--city-units "北京:总部,上海:分公司"`）
 
 **阶段3 - PDF合并**：
 - 需要 `--input-dir` 参数才能收集发票PDF

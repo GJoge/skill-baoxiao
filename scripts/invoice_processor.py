@@ -1554,87 +1554,140 @@ def process_invoices(input_dir, output_excel=None, sheet_name='sheet1', rename_f
 
 
 def amount_to_chinese(amount):
-    """将金额数字转换为中文大写"""
-    if amount is None or amount == 0:
-        return "零元整"
+    """
+    将金额数字转换为中文大写金额（经过测试的实现）
 
-    # 中文数字和单位
-    digits = ['零', '壹', '贰', '叁', '肆', '伍', '陆', '柒', '捌', '玖']
-    units = ['', '拾', '佰', '仟']
-    big_units = ['', '万', '亿', '万亿']
+    Args:
+        amount: 数字金额（支持整数、小数、字符串）
 
-    # 处理小数部分
-    amount = round(float(amount), 2)
-    integer_part = int(amount)
-    decimal_part = round((amount - integer_part) * 100)
+    Returns:
+        str: 中文大写金额
 
-    def int_to_chinese(n):
-        """将整数部分转换为中文"""
-        if n == 0:
-            return ""
+    Examples:
+        >>> amount_to_chinese(1234.56)
+        '壹仟贰佰叁拾肆元伍角陆分'
+        >>> amount_to_chinese(100000)
+        '壹拾万元整'
+    """
+    import re
 
-        result = ""
-        unit_idx = 0  # 大单位索引（万、亿）
+    # 数字与大写映射
+    num_map = ['零', '壹', '贰', '叁', '肆', '伍', '陆', '柒', '捌', '玖']
+    unit_map = ['', '拾', '佰', '仟']
+    big_unit = ['', '万', '亿', '兆']
 
-        while n > 0:
-            section = n % 10000  # 每四位一节
-            n = n // 10000
+    # 转换为字符串并清理
+    amount_str = str(amount).replace(',', '').replace(' ', '')
 
-            if section > 0:
-                section_str = ""
-                zero_flag = False
+    # 验证格式
+    if not re.match(r'^-?\d+\.?\d*$', amount_str):
+        raise ValueError(f"无效金额格式: {amount}")
 
-                for i in range(4):
-                    digit = section % 10
-                    section = section // 10
+    # 处理负数
+    negative = amount_str.startswith('-')
+    if negative:
+        amount_str = amount_str[1:]
 
-                    if digit == 0:
-                        if not zero_flag and section_str:
-                            zero_flag = True
-                    else:
-                        if zero_flag:
-                            section_str = digits[0] + section_str
-                            zero_flag = False
-                        section_str = digits[digit] + units[i] + section_str
+    # 分离整数和小数部分
+    if '.' in amount_str:
+        integer_part, decimal_part = amount_str.split('.')
+        decimal_part = decimal_part[:2]  # 最多两位小数
+    else:
+        integer_part, decimal_part = amount_str, ''
 
-                result = section_str + big_units[unit_idx] + result
+    # 验证金额范围
+    if len(integer_part) > 16:
+        raise ValueError("金额超出支持范围（最大支持到千兆）")
 
-            unit_idx += 1
-
-        return result
+    result = []
 
     # 转换整数部分
-    if integer_part == 0:
-        chinese_int = ""
+    if integer_part == '0' or integer_part == '':
+        if not decimal_part:
+            return '零元整'
     else:
-        chinese_int = int_to_chinese(integer_part) + "元"
+        # 去除前导零
+        integer_part = integer_part.lstrip('0') or '0'
+
+        # 按4位分组（从右向左）
+        groups = []
+        temp = integer_part
+        while temp:
+            groups.insert(0, temp[-4:].zfill(4))
+            temp = temp[:-4]
+
+        zero_flag = False
+
+        for i, group in enumerate(groups):
+            group_int = int(group)
+
+            if group_int == 0:
+                zero_flag = True
+                continue
+
+            # 处理这个4位组
+            group_str = group.zfill(4)
+            group_result = []
+            has_nonzero = False
+
+            for j, digit in enumerate(group_str):
+                d = int(digit)
+                if d == 0:
+                    if has_nonzero and (not group_result or group_result[-1] != '零'):
+                        group_result.append('零')
+                else:
+                    has_nonzero = True
+                    group_result.append(num_map[d] + unit_map[3-j])
+
+            # 去除末尾的零
+            while group_result and group_result[-1] == '零':
+                group_result.pop()
+
+            # 添加大单位
+            if group_result:
+                if zero_flag:
+                    result.append('零')
+                result.extend(group_result)
+                unit_idx = len(groups) - 1 - i
+                if unit_idx > 0:
+                    result.append(big_unit[unit_idx])
+                zero_flag = False
+
+        # 添加"元"
+        if result and result[-1] == '零':
+            result[-1] = '元'
+        else:
+            result.append('元')
 
     # 转换小数部分
-    jiao = decimal_part // 10
-    fen = decimal_part % 10
+    if decimal_part:
+        jiao = int(decimal_part[0]) if len(decimal_part) >= 1 else 0
+        fen = int(decimal_part[1]) if len(decimal_part) >= 2 else 0
 
-    if jiao == 0 and fen == 0:
-        chinese_dec = "整"
-    elif jiao == 0:
-        chinese_dec = digits[0] + digits[fen] + "分"
-    elif fen == 0:
-        chinese_dec = digits[jiao] + "角"
-    else:
-        chinese_dec = digits[jiao] + "角" + digits[fen] + "分"
-
-    # 特殊情况：只有小数部分
-    if integer_part == 0:
         if jiao == 0 and fen == 0:
-            return "零元整"
+            result.append('整')
         else:
-            chinese_int = ""
             if jiao > 0:
-                chinese_int = digits[jiao] + "角"
-            if fen > 0:
-                chinese_int += digits[fen] + "分"
-            return chinese_int
+                result.append(num_map[jiao] + '角')
+            elif integer_part != '0' and integer_part != '':
+                result.append('零')
 
-    return chinese_int + chinese_dec
+            if fen > 0:
+                result.append(num_map[fen] + '分')
+    else:
+        result.append('整')
+
+    # 清理连续的零
+    result_str = ''.join(result)
+    result_str = re.sub(r'零+', '零', result_str)
+    result_str = result_str.replace('零元', '元')
+    result_str = result_str.replace('零整', '整')
+
+    # 处理负数
+    if negative:
+        result_str = '负' + result_str
+
+    return result_str
 
 
 def write_to_excel(excel_path, sheet_name, summary, date_objects=None):
@@ -2131,19 +2184,45 @@ def collect_pdfs_in_order(invoice_dir, work_dir):
 
 # ============ 命令行入口 ============
 
-def generate_data_report(result, output_path='data_report.json'):
-    """生成数据报告（JSON格式），供用户复核"""
+def generate_data_report(result, output_path='data_report.json', config=None):
+    """生成数据报告（JSON格式），供用户复核
+
+    参数:
+        result: 处理结果字典
+        output_path: 输出文件路径
+        config: 配置字典，用于检测未知城市
+    """
     import json
     from datetime import datetime
 
     summary = result.get('summary', {})
     date_objects = result.get('date_objects', {})
+    cities = summary.get('cities', [])
+
+    # 检测未知城市（不在config.yaml中的城市）
+    unknown_cities = []
+    if config and 'city_units' in config:
+        city_unit_map = config['city_units']
+        for city in cities:
+            # 检查城市是否在配置中
+            is_known = False
+            if city in city_unit_map:
+                is_known = True
+            else:
+                # 部分匹配
+                for known_city in city_unit_map.keys():
+                    if known_city in city or city in known_city:
+                        is_known = True
+                        break
+            if not is_known:
+                unknown_cities.append(city)
 
     # 构建可序列化的报告
     report = {
         'generated_at': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
-        'cities': summary.get('cities', []),
+        'cities': cities,
         'cities_str': summary.get('cities_str', ''),
+        'unknown_cities': unknown_cities,
         'dates': {
             'earliest': date_objects.get('earliest').strftime('%Y-%m-%d') if date_objects.get('earliest') else None,
             'latest': date_objects.get('latest').strftime('%Y-%m-%d') if date_objects.get('latest') else None,
@@ -2162,7 +2241,7 @@ def generate_data_report(result, output_path='data_report.json'):
         'file_details': result.get('file_details', []),
         'warnings': result.get('warnings', []),
         'errors': result.get('errors', []),
-        'needs_review': bool(result.get('warnings', [])),
+        'needs_review': bool(result.get('warnings', [])) or len(unknown_cities) > 0,
         '_user_notes': '请复核以上数据，如有问题请修改后保存，然后执行 --write-data 阶段',
     }
 
@@ -2262,7 +2341,7 @@ if __name__ == '__main__':
         )
 
         # 生成数据报告
-        report = generate_data_report(result, args.report)
+        report = generate_data_report(result, args.report, config)
 
         # 输出摘要
         print("\n" + "="*60)
@@ -2273,6 +2352,14 @@ if __name__ == '__main__':
         print(f"日期: {report['dates']['earliest']} 至 {report['dates']['latest']}")
         print(f"住宿: ¥{report['amounts']['zhusu']}")
         print(f"滴滴: {report['counts']['didi']}张, ¥{report['amounts']['didi']}")
+
+        # 显示未知城市警告
+        if report.get('unknown_cities'):
+            print("\n" + "="*60)
+            print("⚠️ 发现未知城市（未在config.yaml中配置）:")
+            print("="*60)
+            for city in report['unknown_cities']:
+                print(f"  - {city}")           
 
         if report['warnings']:
             print("\n" + "="*60)
@@ -2318,6 +2405,28 @@ if __name__ == '__main__':
         # 获取最终的城市单位映射（命令行 > 配置文件）
         city_unit_map = get_city_unit_map(config, cli_city_unit_map)
 
+        # 检查未知城市
+        unknown_cities = report.get('unknown_cities', [])
+        if unknown_cities:
+            print("\n" + "="*60)
+            print("⚠️ 发现以下未知城市需要处理:")
+            print("="*60)
+            for city in unknown_cities:
+                print(f"  - {city}")
+
+            # 检查是否已通过命令行参数提供单位
+            still_unknown = [c for c in unknown_cities if c not in cli_city_unit_map]
+            if still_unknown:
+                print("\n这些城市未在config.yaml中配置，也未通过 --city-units 参数指定单位。")
+                print("\n请在执行阶段2前选择以下方式之一:")
+                print("  方式1: 修改 config.yaml 添加城市单位映射")
+                print("  方式2: 使用 --city-units 参数指定单位，例如:")
+                print(f"     --city-units \"{still_unknown[0]}:单位名称\"")
+                print("\n或者，如果城市识别有误，请修改 data_report.json 中的 cities 字段后重新执行阶段2。")
+                exit(1)
+            else:
+                print("\n✓ 已通过 --city-units 参数提供单位映射，继续执行...")
+
         # 写入Excel
         if args.output_excel:
             print(f"\n[步骤1] 写入Excel: {args.output_excel}")
@@ -2354,6 +2463,54 @@ if __name__ == '__main__':
 
             # 复制日期到sheet2
             copy_dates_between_sheets(args.output_excel, args.sheet, 'sheet2')
+
+            # 计算伙食补助费（定额：每天100元）
+            daily_allowance = 100  # 每天100元伙食补助
+            earliest_date = report['dates']['earliest']
+            latest_date = report['dates']['latest']
+
+            if earliest_date and latest_date:
+                trip_days = (latest_date - earliest_date).days + 1  # 包含首尾两天
+                meal_allowance = trip_days * daily_allowance
+            else:
+                trip_days = 0
+                meal_allowance = 0
+
+            # 更新 data_report.json，添加伙食补助信息
+            report['trip_days'] = trip_days
+            report['meal_allowance'] = meal_allowance
+            report['meal_allowance_daily_rate'] = daily_allowance
+
+            # 重新保存 data_report.json
+            with open(args.report, 'w', encoding='utf-8') as f:
+                # 转换日期为字符串以便JSON序列化
+                report_for_save = report.copy()
+                if isinstance(report_for_save['dates']['earliest'], datetime):
+                    report_for_save['dates']['earliest'] = report_for_save['dates']['earliest'].strftime('%Y-%m-%d')
+                if isinstance(report_for_save['dates']['latest'], datetime):
+                    report_for_save['dates']['latest'] = report_for_save['dates']['latest'].strftime('%Y-%m-%d')
+                json.dump(report_for_save, f, ensure_ascii=False, indent=2)
+            print(f"  ✓ 已更新 {args.report}: 出差{trip_days}天, 伙食补助¥{meal_allowance}")
+
+            # 计算总合计（所有费用 + 伙食补助）
+            total_amount = (
+                report['amounts']['jipiao'] +
+                report['amounts']['huoche'] +
+                report['amounts']['didi'] +
+                report['amounts']['zhusu'] +
+                meal_allowance
+            )
+
+            # 将合计转为中文大写，写入 E13
+            try:
+                chinese_total = amount_to_chinese(total_amount)
+                wb = load_workbook(args.output_excel)
+                ws = wb[args.sheet]
+                ws['E13'] = chinese_total
+                wb.save(args.output_excel)
+                print(f"  ✓ 总合计¥{total_amount}已转为大写并写入E13: {chinese_total}")
+            except Exception as e:
+                print(f"  ⚠️ 写入E13大写金额失败: {e}")
 
         # 写入Word文档
         work_dir = args.work_dir
