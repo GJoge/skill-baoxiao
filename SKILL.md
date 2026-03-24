@@ -48,12 +48,12 @@ python3 ~/.claude/skills/baoxiao/scripts/invoice_processor.py \
 
 ### 阶段2: 数据写入（--write-data）
 
-**前置检查**：若 `data_report.json` 中有 `unknown_cities`（即城市未在config.yaml中配置），**必须暂停询问用户**：
+**前置检查**：
+1. 检查配置文件~/.claude/skills/baoxiao/scripts/config.yaml是否存在，若不存在则询问用户城市单位映射，并采用bash方式2
+2. 检查若 `data_report.json` 中是否有 `unknown_cities`（即城市未在config.yaml中配置），如果有**必须暂停询问用户，提供以下三种选项供用户选择**：
 - 选项1：新增城市映射 → 添加到 `config.yaml`
 - 选项2：修正城市名称 → 修改 `data_report.json`（如"纺阳"→"沈阳"）
 - 选项3：删除该城市 → 从 `data_report.json` 移除
-
-**说明**：若所有城市都已在 `config.yaml` 中配置，则无需 `--city-units` 参数，直接执行即可。
 
 解决后才能继续：
 
@@ -66,7 +66,7 @@ python3 ~/.claude/skills/baoxiao/scripts/invoice_processor.py \
 python3 ~/.claude/skills/baoxiao/scripts/invoice_processor.py \
   --output-excel biaoge.xlsx --work-dir . --write-data
 
-# 方式2：通过命令行临时指定城市单位映射（优先级高于config.yaml）
+# 方式2：通过命令行临时指定城市单位映射（优先级低于config.yaml）
 python3 ~/.claude/skills/baoxiao/scripts/invoice_processor.py \
   --output-excel biaoge.xlsx --work-dir . --write-data \
   --city-units "城市A:单位A,城市B:单位B"
