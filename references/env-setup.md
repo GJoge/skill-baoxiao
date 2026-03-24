@@ -14,7 +14,96 @@ if [ -f ~/.cache/baoxiao/.env_checked ]; then
 fi
 
 # 执行完整检查
-python3 ~/.claude/skills/baoxiao/scripts/check_env.py
+```
+
+## 依赖清单检查
+
+按照依赖清单逐项检查系统环境：
+
+```bash
+#!/bin/bash
+echo "=== 依赖清单检查 ==="
+errors=0
+
+# 系统依赖检查
+echo "[系统依赖]"
+check_pkg() {
+    if dpkg -l | grep -q "^ii  $1"; then
+        echo "  ✓ $1"
+    else
+        echo "  ✗ $1 未安装"
+        ((errors++))
+    fi
+}
+
+check_pkg "tesseract-ocr"
+check_pkg "tesseract-ocr-chi-sim"
+check_pkg "poppler-utils"
+check_pkg "libreoffice-writer"
+
+# Python依赖检查
+echo "[Python依赖]"
+python3 << 'PYEOF'
+import sys
+packages = [
+    ("pdfplumber", "0.10.0"),
+    ("pdf2image", "1.16.0"),
+    ("pytesseract", "0.3.10"),
+    ("Pillow", "9.0.0"),
+    ("openpyxl", "3.0.0"),
+    ("pandas", "1.3.0"),
+    ("docx", "0.8.11"),
+    ("reportlab", "3.6.0"),
+    ("pypdf", "3.0.0"),
+    ("PyPDF2", "3.0.0"),
+    ("yaml", "6.0")
+]
+errors = 0
+for pkg, min_ver in packages:
+    try:
+        if pkg == "docx":
+            import docx
+            print(f"  ✓ python-docx")
+        elif pkg == "yaml":
+            import yaml
+            print(f"  ✓ pyyaml")
+        else:
+            __import__(pkg)
+            print(f"  ✓ {pkg}")
+    except ImportError:
+        print(f"  ✗ {pkg} 未安装")
+        errors += 1
+sys.exit(0 if errors == 0 else 1)
+PYEOF
+[ $? -ne 0 ] && ((errors++))
+
+# OFD工具检查
+echo "[OFD转换工具]"
+if command -v ofd2pdf &> /dev/null; then
+    echo "  ✓ ofd2pdf"
+else
+    echo "  ⚠️ ofd2pdf 未安装（可选，OFD文件将无法转换）"
+fi
+
+# 字体检查
+echo "[字体依赖]"
+if fc-list :lang=zh | grep -qiE "simsun|wqy|noto.*cjk"; then
+    echo "  ✓ 中文字体"
+else
+    echo "  ⚠️ 中文字体可能缺失"
+fi
+
+# 结果
+if [ $errors -eq 0 ]; then
+    echo ""
+    echo "✓ 所有依赖检查通过"
+    mkdir -p ~/.cache/baoxiao
+    touch ~/.cache/baoxiao/.env_checked
+else
+    echo ""
+    echo "✗ 发现 $errors 个问题，请运行安装脚本"
+    exit 1
+fi
 ```
 
 ## 依赖清单
