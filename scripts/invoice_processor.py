@@ -155,6 +155,10 @@ def load_wechat_bill_data(bill_path):
                 amount = row[5]  # F列 - 金额(元)
                 trans_no = row[8]  # I列 - 交易单号
 
+                # 删除已全额退款的记录（不是真实消费，不应匹配交易单号）
+                if merchant and '已全额退款' in str(merchant):
+                    continue  # 跳过这些记录，不添加到amount_to_trans
+
                 if amount is not None and trans_no is not None:
                     # 处理金额（可能是字符串或数字）
                     if isinstance(amount, str):
@@ -479,12 +483,30 @@ def match_and_add_transaction_numbers(input_dir, work_dir, report_path='data_rep
         # 如果有匹配的交易单号，添加到PDF
         if trans_numbers:
             output_pdf = os.path.join(work_dir, f'标记_{pdf_file}')
-            if add_transaction_numbers_to_pdf(pdf_path, output_pdf, trans_numbers):
-                # 用标记后的文件替换原文件
-                shutil.move(output_pdf, pdf_path)
-                trans_list = ", ".join([f"[{n}]" for n, _ in trans_numbers])
-                print(f"  ✓ {pdf_file}: 添加了 {len(trans_numbers)} 个交易单号 {trans_list}")
-                matched_count += 1
+
+            # 检查PDF是否已经包含交易单号，避免重复添加
+            needs_marking = True
+            try:
+                from pypdf import PdfReader
+                reader = PdfReader(pdf_path)
+                text = ""
+                for page in reader.pages:
+                    text += page.extract_text()
+                if "交易单号" in text:
+                    needs_marking = False
+                    break
+            except:
+                pass  # 读取失败时继续处理
+
+            if needs_marking:
+                if add_transaction_numbers_to_pdf(pdf_path, output_pdf, trans_numbers):
+                    # 用标记后的文件替换原文件
+                    shutil.move(output_pdf, pdf_path)
+                    trans_list = ", ".join([f"[{n}]" for n, _ in trans_numbers])
+                    print(f"  ✓ {pdf_file}: 添加了 {len(trans_numbers)} 个交易单号 {trans_list}")
+                    matched_count += 1
+            else:
+                print(f"  ✓ {pdf_file}: 已有交易单号，跳过添加")
 
     print(f"\n  ✓ 共为 {matched_count} 个PDF文件添加了交易单号")
 
