@@ -655,13 +655,37 @@ def classify_didi_subtype(text):
 def extract_cities_from_pdf(pdf_path, inv_type):
     """
     从机票或火车票PDF中提取出发站和到达站城市名称（排除北京）
+    优先使用pdfplumber提取文本，失败后再使用OCR
     返回: (cities_list, raw_text)
     """
-    # 使用高DPI进行OCR以获取更准确的文本
-    images = pdf2image.convert_from_path(pdf_path, dpi=OCR_DPI_HIGH)
-    text = pytesseract.image_to_string(images[0], lang='chi_sim')
+    text = ""
+
+    # 优先使用pdfplumber提取文本
+    try:
+        with pdfplumber.open(pdf_path) as pdf:
+            for page in pdf.pages:
+                page_text = page.extract_text()
+                if page_text:
+                    text += page_text
+    except Exception as e:
+        pass
+
+    # 如果文本层为空或太短，使用OCR
+    if len(text.strip()) < 50:
+        images = pdf2image.convert_from_path(pdf_path, dpi=OCR_DPI_HIGH)
+        text = pytesseract.image_to_string(images[0], lang='chi_sim')
 
     cities = set()
+
+    def normalize_city_name(city):
+        """标准化城市名：去掉站字和方向后缀"""
+        if not city:
+            return city
+        # 去掉站字后缀
+        city = re.sub(r'站$', '', city.strip())
+        # 去掉东南西北方向后缀（如成都东->成都，北京南->北京）
+        city = re.sub(r'[东南西北]$', '', city.strip())
+        return city
 
     if inv_type == 'jipiao':
         # 机票：查找出发和到达城市
@@ -676,16 +700,16 @@ def extract_cities_from_pdf(pdf_path, inv_type):
                     word1, word2 = match.group(1).strip(), match.group(2).strip()
                     # 如果第一个词全是英文字母（机场代码），使用第二个词
                     if word1.isalpha() and word1.isascii():
-                        city = word2
+                        city = normalize_city_name(word2)
                     else:
-                        city = word1
+                        city = normalize_city_name(word1)
                     if city and city not in ['城市', '地点', '目的', '出发', '到达', '自'] and len(city) <= 10:
                         cities.add(city)
                 else:
                     # 只有一个词的情况
                     match = re.search(r'自\s*[:：]\s*(\S+)', line)
                     if match:
-                        city = match.group(1).strip()
+                        city = normalize_city_name(match.group(1).strip())
                         if city and city not in ['城市', '地点', '目的', '出发', '到达', '自'] and len(city) <= 10:
                             cities.add(city)
 
@@ -697,16 +721,16 @@ def extract_cities_from_pdf(pdf_path, inv_type):
                     word1, word2 = match.group(1).strip(), match.group(2).strip()
                     # 如果第一个词全是英文字母（机场代码），使用第二个词
                     if word1.isalpha() and word1.isascii():
-                        city = word2
+                        city = normalize_city_name(word2)
                     else:
-                        city = word1
+                        city = normalize_city_name(word1)
                     if city and city not in ['城市', '地点', '目的', '出发', '到达', '至'] and len(city) <= 10:
                         cities.add(city)
                 else:
                     # 只有一个词的情况
                     match = re.search(r'至\s*[:：]\s*(\S+)', line)
                     if match:
-                        city = match.group(1).strip()
+                        city = normalize_city_name(match.group(1).strip())
                         if city and city not in ['城市', '地点', '目的', '出发', '到达', '至'] and len(city) <= 10:
                             cities.add(city)
 
@@ -736,7 +760,7 @@ def extract_cities_from_pdf(pdf_path, inv_type):
         airport_pattern = r'(\S+?)(?:国际|国内)?机场'
         airport_matches = re.findall(airport_pattern, text)
         for city in airport_matches:
-            city = city.strip()
+            city = normalize_city_name(city.strip())
             if city and city not in ['国际', '国内', '大型'] and len(city) <= 10:
                 cities.add(city)
 
@@ -747,7 +771,7 @@ def extract_cities_from_pdf(pdf_path, inv_type):
             r'出发[站]\s*(\S+?)\s*到达[站]\s*(\S+?)',
             r'(\S+?站)\s*[-—–~～]\s*(\S+?站)',
             r'发[站]\s*[:：]?\s*(\S+?)\s*到[站]\s*[:：]?\s*(\S+)',
-            r'(\S+?)\s*[-—–~～]\s*(\S+?)',
+            # 移除过于宽泛的pattern：r'(\S+?)\s*[-—–~～]\s*(\S+?)'
             r'站名[：:]\s*(\S+?)\s*',
             r'(\S+?站)\s*[→到]\s*(\S+?站)',
         ]
@@ -757,12 +781,11 @@ def extract_cities_from_pdf(pdf_path, inv_type):
             for match in matches:
                 if isinstance(match, tuple):
                     for station in match:
-                        # 去掉"站"、"南站"、"北站"、"东站"、"西站"等后缀
-                        city = re.sub(r'(南|北|东|西)?站$', '', station.strip())
+                        city = normalize_city_name(station.strip())
                         if city and len(city) <= 10:
                             cities.add(city)
                 else:
-                    city = re.sub(r'(南|北|东|西)?站$', '', match.strip())
+                    city = normalize_city_name(match.strip())
                     if city and len(city) <= 10:
                         cities.add(city)
 
@@ -770,9 +793,27 @@ def extract_cities_from_pdf(pdf_path, inv_type):
         station_name_pattern = r'站名[：:]\s*(\S+?)(?:\s|$)'
         station_matches = re.findall(station_name_pattern, text)
         for station in station_matches:
-            city = re.sub(r'(南|北|东|西)?站$', '', station.strip())
+            city = normalize_city_name(station.strip())
             if city and len(city) <= 10:
                 cities.add(city)
+
+        # 额外处理：处理两行格式的火车站信息（如"绵阳\n站"）
+        # 匹配中文城市名，然后检查后续行是否包含"站"
+        # 更严格的条件：城市名必须在行首，且附近有"站"
+        lines = text.split('\n')
+        for i, line in enumerate(lines):
+            # 查找2-3个汉字的城市名（必须在行首或独立存在）
+            city_matches = re.finditer(r'^([\u4e00-\u9fa5]{2,3})|(?<!\w)([\u4e00-\u9fa5]{2,3})(?!\w)', line)
+            for city_match in city_matches:
+                city_name = city_match.group(1) if city_match.group(1) else city_match.group(2)
+                # 检查同一行或下一行是否包含"站"
+                same_line_has_zhan = '站' in line
+                next_line_has_zhan = i + 1 < len(lines) and '站' in lines[i + 1]
+                # 只有附近有"站"才认为是车站城市
+                if (same_line_has_zhan or next_line_has_zhan):
+                    city = normalize_city_name(city_name)
+                    if city and city not in ['城市', '地点', '目的', '出发', '到达', '四川省', '税务局', '发票号', '开票日'] and len(city) <= 10:
+                        cities.add(city)
 
     # 过滤掉"北京"及其变体
     filtered_cities = set()
@@ -950,16 +991,34 @@ def extract_dates_with_pdfplumber(pdf_path, exclude_tiankai=True):
 def extract_flight_dates_with_validation(pdf_path):
     """
     从机票PDF中提取航班日期，带多重校验和自动复核
+    优先使用pdfplumber提取文本，失败后再使用OCR
     关键区分：航班日期 vs 填开日期
     返回: (dates_list, warnings_list, raw_text)
     """
     warnings = []
 
-    # 必须使用高DPI
-    images = pdf2image.convert_from_path(pdf_path, dpi=OCR_DPI_HIGH)
-    text = pytesseract.image_to_string(images[0], lang='chi_sim')
+    # 优先使用pdfplumber提取文本
+    text = ""
+    try:
+        with pdfplumber.open(pdf_path) as pdf:
+            for page in pdf.pages:
+                page_text = page.extract_text()
+                if page_text:
+                    text += page_text
+    except Exception as e:
+        pass
 
-    # 提取所有可能的日期（处理OCR错误：昌->日）
+    # 如果文本层为空或太短，使用OCR
+    use_ocr = False
+    if len(text.strip()) < 50:
+        print(f"    ⚠️ PDF文本层不足，使用OCR识别...")
+        images = pdf2image.convert_from_path(pdf_path, dpi=OCR_DPI_HIGH)
+        text = pytesseract.image_to_string(images[0], lang='chi_sim')
+        use_ocr = True
+    else:
+        print(f"    ✓ 使用PDF文本层识别")
+
+    # 提取所有可能的日期（仅在OCR模式下处理"昌"->"日"错误）
     date_pattern = r'(\d{4}年\d{1,2}月\d{1,2}[日昌]?)'
     all_date_matches = re.findall(date_pattern, text)
 
@@ -972,14 +1031,30 @@ def extract_flight_dates_with_validation(pdf_path):
         except:
             continue
 
-    # ===== 自动复核：如果OCR未识别到日期，使用pdfplumber复核 =====
+    # ===== 自动复核：如果未识别到日期，尝试其他方法 =====
     if not all_dates:
-        print(f"    ⚠️ OCR未识别到日期，使用pdfplumber复核...")
-        plumber_dates, plumber_text = extract_dates_with_pdfplumber(pdf_path)
-        if plumber_dates:
-            all_dates = plumber_dates
-            text = plumber_text  # 使用pdfplumber的文本用于后续处理
-            print(f"    ✓ pdfplumber复核成功，识别到 {len(plumber_dates)} 个日期")
+        if use_ocr:
+            print(f"    ⚠️ OCR未识别到日期，使用pdfplumber复核...")
+            plumber_dates, plumber_text = extract_dates_with_pdfplumber(pdf_path)
+            if plumber_dates:
+                all_dates = plumber_dates
+                text = plumber_text  # 使用pdfplumber的文本用于后续处理
+                print(f"    ✓ pdfplumber复核成功，识别到 {len(plumber_dates)} 个日期")
+        else:
+            print(f"    ⚠️ PDF文本层未识别到日期，尝试OCR复核...")
+            images = pdf2image.convert_from_path(pdf_path, dpi=OCR_DPI_HIGH)
+            ocr_text = pytesseract.image_to_string(images[0], lang='chi_sim')
+            ocr_date_matches = re.findall(date_pattern, ocr_text)
+            for match in ocr_date_matches:
+                try:
+                    match_clean = match.replace('昌', '日').replace('日', '')
+                    d = datetime.strptime(match_clean, '%Y年%m月%d')
+                    all_dates.append(d)
+                except:
+                    continue
+            if all_dates:
+                text = ocr_text  # 使用OCR文本用于后续处理
+                print(f"    ✓ OCR复核成功，识别到 {len(all_dates)} 个日期")
 
     if not all_dates:
         warnings.append(f"未识别到任何日期")
