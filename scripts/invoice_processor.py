@@ -322,7 +322,7 @@ def add_transaction_numbers_to_pdf(input_pdf, output_pdf, trans_numbers):
 
         # 计算起始y位置（根据交易单号数量）
         # 序号小的画在上面（y坐标大），序号大的画在下面（y坐标小）
-        base_y = 30
+        base_y = 30 if has_multiple else 7
         line_height = 15
         y_pos = base_y + (len(trans_numbers) - 1) * line_height
 
@@ -372,10 +372,17 @@ def add_transaction_numbers_to_pdf(input_pdf, output_pdf, trans_numbers):
         return False
 
 
-def match_and_add_transaction_numbers(input_dir, work_dir, report_path='data_report.json'):
+def match_and_add_transaction_numbers(input_dir, work_dir, report_path='data_report.json', force_mark=False):
     """
     主函数：查找微信支付账单，匹配发票金额，添加交易单号到PDF
     使用data_report中的file_details数据，避免重复提取金额
+
+    Args:
+        input_dir: 发票目录
+        work_dir: 工作目录
+        report_path: 报告文件路径
+        force_mark: 是否强制重新标记（忽略已有标记）
+
     返回: 处理是否成功的布尔值
     """
     print("\n[步骤0] 检查微信支付账单...")
@@ -428,6 +435,15 @@ def match_and_add_transaction_numbers(input_dir, work_dir, report_path='data_rep
         # 从file_details获取该文件的信息
         file_info = file_details_map.get(pdf_file, {})
         ftype = file_info.get('type', '')
+        pdf_path = os.path.join(input_dir, pdf_file)
+
+        # 跳过非发票PDF（如已经处理过的备份文件）
+        if pdf_file.startswith('.'):
+            continue
+
+        # 从file_details获取该文件的信息
+        file_info = file_details_map.get(pdf_file, {})
+        ftype = file_info.get('type', '')
 
         trans_numbers = []
 
@@ -447,7 +463,7 @@ def match_and_add_transaction_numbers(input_dir, work_dir, report_path='data_rep
                         trans_numbers.append((idx, trans_no))
                         idx += 1
                         matched = True
-                        break  # 精确匹配成功后立即跳出，不进行模糊匹配
+                        continue  # 精确匹配成功后跳过模糊匹配，继续处理下一笔金额
 
                     # 第二步：如果精确匹配失败，尝试模糊匹配（仅适用于滴滴行程单）
                     if not matched:
@@ -485,19 +501,20 @@ def match_and_add_transaction_numbers(input_dir, work_dir, report_path='data_rep
         if trans_numbers:
             output_pdf = os.path.join(work_dir, f'标记_{pdf_file}')
 
-            # 检查PDF是否已经包含交易单号，避免重复添加
+            # 检查PDF是否已经包含交易单号，避免重复添加（除非force_mark=True）
             needs_marking = True
-            try:
-                from pypdf import PdfReader
-                reader = PdfReader(pdf_path)
-                text = ""
-                for page in reader.pages:
-                    text += page.extract_text()
-                if "交易单号" in text:
-                    needs_marking = False
-                    break
-            except:
-                pass  # 读取失败时继续处理
+            if not force_mark:
+                try:
+                    from pypdf import PdfReader
+                    reader = PdfReader(pdf_path)
+                    text = ""
+                    for page in reader.pages:
+                        text += page.extract_text()
+                    if "交易单号" in text:
+                        needs_marking = False
+                        break
+                except:
+                    pass  # 读取失败时继续处理
 
             if needs_marking:
                 if add_transaction_numbers_to_pdf(pdf_path, output_pdf, trans_numbers):
@@ -2424,6 +2441,7 @@ if __name__ == '__main__':
     # 单位映射参数（阶段2使用）
     parser.add_argument('--city-units', help='城市到单位的映射，格式: "北京:总部,上海:分公司"')
     parser.add_argument('--config', default='config.yaml', help='配置文件路径（默认: config.yaml）')
+    parser.add_argument('--force-mark', action='store_true', help='强制重新标记交易单号（忽略已有标记）')
 
     args = parser.parse_args()
 
@@ -2676,7 +2694,7 @@ if __name__ == '__main__':
 
         # [步骤0] 微信支付账单处理 - 在转换前执行
         if args.input_dir:
-            match_and_add_transaction_numbers(args.input_dir, work_dir, args.report)
+            match_and_add_transaction_numbers(args.input_dir, work_dir, args.report, args.force_mark)
         else:
             print("\n[步骤0] 跳过微信支付账单处理（未提供 --input-dir）")
 
