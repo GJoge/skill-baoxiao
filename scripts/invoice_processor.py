@@ -149,14 +149,15 @@ def load_wechat_bill_data(bill_path):
 
         # 从第2行开始读取（跳过表头）
         for row_idx, row in enumerate(ws.iter_rows(min_row=2, values_only=True), start=2):
-            # C列是第3列（索引2），F列是第6列（索引5），I列是第9列（索引8）
+            # C列是第3列（索引2），F列是第6列（索引5），H列是第8列（索引7），I列是第9列（索引8）
             if len(row) >= 9:
                 merchant = row[2]  # C列 - 交易对方
                 amount = row[5]  # F列 - 金额(元)
+                status = row[7]  # H列 - 当前状态
                 trans_no = row[8]  # I列 - 交易单号
 
                 # 删除已全额退款的记录（不是真实消费，不应匹配交易单号）
-                if merchant and '已全额退款' in str(merchant):
+                if status and '已全额退款' in str(status):
                     continue  # 跳过这些记录，不添加到amount_to_trans
 
                 if amount is not None and trans_no is not None:
