@@ -138,13 +138,13 @@ def find_wechat_bill_file(input_dir):
 def load_wechat_bill_data(bill_path):
     """
     读取微信支付账单xlsx文件，提取金额(元)列(F列)、交易单号列(I列)和交易对方列(C列)
-    返回: {金额: 交易单号} 的字典 和 金额到交易对方的映射
+    返回: {金额: [交易单号列表]} 的字典 和 金额到交易对方的映射
     """
     try:
         wb = load_workbook(bill_path, read_only=True)
         ws = wb.active
 
-        amount_to_trans = {}
+        amount_to_trans = {}  # {金额: [交易单号列表]} - 支持相同金额
         amount_to_merchant = {}  # 金额到交易对方的映射
 
         # 从第2行开始读取（跳过表头）
@@ -169,7 +169,10 @@ def load_wechat_bill_data(bill_path):
 
                     # 只保留非零金额
                     if amount_val > 0:
-                        amount_to_trans[amount_val] = str(trans_no).strip()
+                        # 使用列表存储相同金额的交易单号，解决重复金额覆盖问题
+                        if amount_val not in amount_to_trans:
+                            amount_to_trans[amount_val] = []
+                        amount_to_trans[amount_val].append(str(trans_no).strip())
                         if merchant:
                             amount_to_merchant[amount_val] = str(merchant).strip()
 
@@ -434,21 +437,21 @@ def match_and_add_transaction_numbers(input_dir, work_dir, report_path='data_rep
                 for amount in amounts:
                     matched = False
                     # 第一步：精确匹配（允许0.01元误差）
-                    for bill_amount, trans_no in amount_to_trans.items():
-                        if abs(bill_amount - amount) < 0.01:
-                            trans_numbers.append((idx, trans_no))
-                            idx += 1
-                            matched = True
-                            break
+                    if amount in amount_to_trans and amount_to_trans[amount]:
+                        trans_no = amount_to_trans[amount].pop(0)  # 取出第一个并删除
+                        trans_numbers.append((idx, trans_no))
+                        idx += 1
+                        matched = True
 
                     # 第二步：如果精确匹配失败，尝试模糊匹配（仅适用于滴滴行程单）
                     if not matched:
-                        for bill_amount, trans_no in amount_to_trans.items():
+                        for bill_amount, trans_numbers_list in amount_to_trans.items():
                             diff = bill_amount - amount
                             # 差额在0.01到10元之间，且交易对方是"滴滴出行"
                             if 0.01 <= diff <= 10:
                                 merchant = amount_to_merchant.get(bill_amount, '')
-                                if '滴滴' in merchant:
+                                if '滴滴' in merchant and trans_numbers_list:
+                                    trans_no = trans_numbers_list.pop(0)
                                     trans_numbers.append((idx, trans_no))
                                     idx += 1
                                     matched = True
@@ -468,10 +471,9 @@ def match_and_add_transaction_numbers(input_dir, work_dir, report_path='data_rep
             if amount is None:
                 amount, _ = extract_amount_from_pdf(pdf_path, ftype)
             if amount:
-                for bill_amount, trans_no in amount_to_trans.items():
-                    if abs(bill_amount - amount) < 0.01:
-                        trans_numbers.append((1, trans_no))
-                        break
+                if amount in amount_to_trans and amount_to_trans[amount]:
+                    trans_no = amount_to_trans[amount].pop(0)
+                    trans_numbers.append((1, trans_no))
 
         # 如果有匹配的交易单号，添加到PDF
         if trans_numbers:
