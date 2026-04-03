@@ -29,6 +29,7 @@ from pypdf import PdfWriter, PdfReader
 
 # 发票类型关键字
 TYPE_KEYWORDS = {
+    'tuigai': ['退票费', '改签费', '退票', '改签', '变更'],
     'huoche': ['铁路', '车次', '二等座', '高铁', '动车', '列车', '12306', '出发站', '到达站', '铁路电子客票'],
     'jipiao': ['航空', '航班', '承运人', '民航', '座位等级', '国内国际标识', '机场', '登机', '客票级别', '航班号'],
     'zhusu': ['住宿', '酒店', '宾馆', '住宿费', '房费', '旅店', '客房', '住宿服务'],
@@ -46,6 +47,7 @@ USER_CONFIRMED_TYPES = {}
 
 # 金额合理范围（用于校验）
 AMOUNT_RANGES = {
+    'tuigai': (5, 500),
     'huoche': (20, 3000),
     'jipiao': (300, 8000),
     'zhusu': (100, 3000),
@@ -549,12 +551,16 @@ def identify_invoice_type(text, filename, interactive=True):
     for inv_type, keywords in TYPE_KEYWORDS.items():
         scores[inv_type] = sum(1 for k in keywords if k in text)
 
+    # 优先检查退改签特征（包含退票费/改签费的PDF应优先识别为退改签）
+    if '退票费' in text or '改签费' in text:
+        scores['tuigai'] += 10  # 提高退改签优先级
+
     max_type = max(scores, key=scores.get)
     max_score = scores[max_type]
 
     # 检查是否是其他交通类发票（归入滴滴类别）
     transport_score = sum(1 for k in TRANSPORT_KEYWORDS if k in text)
-    if transport_score > 0:
+    if transport_score > 0 and max_type != 'tuigai':
         print(f"  检测到交通类发票关键词（地铁/公交/出租车等），归入滴滴类别: {filename}")
         return 'didi'
 
@@ -810,6 +816,10 @@ def extract_amount_from_pdf(pdf_path, inv_type=None):
 
     # 匹配金额模式（按优先级）
     patterns = [
+        (r'退票费.*?[¥￥]\s*([\d,]+\.\d{2})', '退票费(后)'),
+        (r'[¥￥]\s*([\d,]+\.\d{2})\s*退票费', '退票费(前)'),
+        (r'改签费.*?[¥￥]\s*([\d,]+\.\d{2})', '改签费(后)'),
+        (r'[¥￥]\s*([\d,]+\.\d{2})\s*改签费', '改签费(前)'),
         (r'价税合计.*?\(小写\).*?¥?\s*([\d,]+\.\d{2})', '价税合计(小写)'),
         (r'价税合计.*?[¥￥]\s*([\d,]+\.\d{2})', '价税合计'),
         (r'价税合计.*?([\d,]+\.\d{2})', '价税合计(纯数字)'),
@@ -1248,7 +1258,9 @@ def process_invoices(input_dir, output_excel=None, sheet_name='sheet1', rename_f
         for old_name, ftype in file_types.items():
             counters[ftype] += 1
 
-            if ftype == 'huoche':
+            if ftype == 'tuigai':
+                new_name = f"tuigai{counters[ftype]}.pdf"
+            elif ftype == 'huoche':
                 new_name = f"huoche{counters[ftype]}.pdf"
             elif ftype == 'jipiao':
                 new_name = f"jipiao{counters[ftype]}.pdf"
@@ -2150,6 +2162,7 @@ def collect_pdfs_in_order(invoice_dir, work_dir):
         ('shenpi', ['shenpi.pdf']),
         ('jipiao', ['jipiao*.pdf']),
         ('huoche', ['huoche*.pdf']),
+        ('tuigai', ['tuigai*.pdf']),
         ('zhusu', ['zhusu*.pdf']),
         ('didi', ['滴滴*.pdf', '交通费*.pdf']),
     ]
@@ -2230,12 +2243,14 @@ def generate_data_report(result, output_path='data_report.json', config=None):
         'amounts': {
             'jipiao': summary.get('jipiao_amount', 0),
             'huoche': summary.get('huoche_amount', 0),
+            'tuigai': summary.get('tuigai_amount', 0),
             'didi': summary.get('didi_einvoice_amount', 0),
             'zhusu': summary.get('zhusu_amount', 0),
         },
         'counts': {
             'jipiao': summary.get('jipiao_count', 0),
             'huoche': summary.get('huoche_count', 0),
+            'tuigai': summary.get('tuigai_count', 0),
             'didi': summary.get('didi_count', 0),
         },
         'file_details': result.get('file_details', []),
@@ -2442,8 +2457,8 @@ if __name__ == '__main__':
                 'huoche_amount': report['amounts']['huoche'],
                 'jipiao_count': report['counts']['jipiao'],
                 'jipiao_amount': report['amounts']['jipiao'],
-                'tuigai_count': 0,
-                'tuigai_amount': 0,
+                'tuigai_count': report['counts'].get('tuigai', 0),
+                'tuigai_amount': report['amounts'].get('tuigai', 0),
                 'didi_count': report['counts']['didi'],
                 'didi_einvoice_amount': report['amounts']['didi'],
                 'zhusu_amount': report['amounts']['zhusu'],
@@ -2496,6 +2511,7 @@ if __name__ == '__main__':
             total_amount = (
                 report['amounts']['jipiao'] +
                 report['amounts']['huoche'] +
+                report['amounts'].get('tuigai', 0) +
                 report['amounts']['didi'] +
                 report['amounts']['zhusu'] +
                 meal_allowance
