@@ -442,6 +442,7 @@ def match_and_add_transaction_numbers(input_dir, work_dir, report_path='data_rep
                         trans_numbers.append((idx, trans_no))
                         idx += 1
                         matched = True
+                        break  # 精确匹配成功后立即跳出，不进行模糊匹配
 
                     # 第二步：如果精确匹配失败，尝试模糊匹配（仅适用于滴滴行程单）
                     if not matched:
@@ -463,7 +464,7 @@ def match_and_add_transaction_numbers(input_dir, work_dir, report_path='data_rep
                                         'diff': diff,
                                         'merchant': merchant
                                     })
-                                    break
+                                    break  # 模糊匹配成功后跳出该金额的遍历
         else:
             # 其他发票（机票、住宿等）：使用预提取的金额
             amount = file_info.get('amount')
