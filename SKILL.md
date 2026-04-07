@@ -12,14 +12,16 @@ description: |
   - 需要按类型归类发票文件
   - 需要验证发票数据的合理性
 ---
-## 前置：环境检查
+## 前置：环境检查,发票备份
 
-检查依赖是否已安装，通过则写入缓存标记 `~/.cache/baoxiao/.env_checked`，后续跳过。
+1. 检查依赖是否已安装，通过则写入缓存标记 `~/.cache/baoxiao/.env_checked`，后续跳过。
+2. 将'发票'文件夹复制为'bak'文件夹,做备份.
 
 ```bash
 if [ ! -f ~/.cache/baoxiao/.env_checked ]; then
     读取 references/env-setup.md 开展环境检查工作
 fi
+cp -r 发票 bak
 ```
 
 ## 执行流程

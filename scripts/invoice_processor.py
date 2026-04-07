@@ -138,7 +138,8 @@ def find_wechat_bill_file(input_dir):
 def load_wechat_bill_data(bill_path):
     """
     读取微信支付账单xlsx文件，提取金额(元)列(F列)、交易单号列(I列)和交易对方列(C列)
-    返回: {金额: [交易单号列表]} 的字典 和 金额到交易对方的映射
+    对于包含"已退款(¥xx.xx)"的记录，计算退票费（原金额 - 已退款金额）并单独存储
+    返回: {金额: [交易单号列表]} 的字典、金额到交易对方的映射、退票费映射
     """
     try:
         wb = load_workbook(bill_path, read_only=True)
@@ -146,6 +147,7 @@ def load_wechat_bill_data(bill_path):
 
         amount_to_trans = {}  # {金额: [交易单号列表]} - 支持相同金额
         amount_to_merchant = {}  # 金额到交易对方的映射
+        refund_fee_to_trans = {}  # {退票费: [交易单号列表]} - 用于匹配tuigai单据
 
         # 从第2行开始读取（跳过表头）
         for row_idx, row in enumerate(ws.iter_rows(min_row=2, values_only=True), start=2):
@@ -160,6 +162,19 @@ def load_wechat_bill_data(bill_path):
                 if status and '已全额退款' in str(status):
                     continue  # 跳过这些记录，不添加到amount_to_trans
 
+                # 处理部分退款 - 计算退票费
+                refunded_amount = None
+                refund_fee = None
+                if status and '已退款' in str(status) and '(' in str(status) and ')' in str(status):
+                    # 提取括号中的已退款金额，例如 "已退款(¥100.00)"
+                    try:
+                        import re
+                        match = re.search(r'[¥￥](\d+\.?\d*)', str(status))
+                        if match:
+                            refunded_amount = float(match.group(1))
+                    except:
+                        pass
+
                 if amount is not None and trans_no is not None:
                     # 处理金额（可能是字符串或数字）
                     if isinstance(amount, str):
@@ -172,6 +187,27 @@ def load_wechat_bill_data(bill_path):
                     else:
                         amount_val = abs(float(amount))
 
+                    # 如果存在部分退款，计算退票费并单独存储
+                    if refunded_amount is not None and amount_val > 0:
+                        refund_fee = amount_val - refunded_amount
+                        if refund_fee > 0:
+                            # 存储退票费用于匹配tuigai单据
+                            if refund_fee not in refund_fee_to_trans:
+                                refund_fee_to_trans[refund_fee] = []
+                            refund_fee_to_trans[refund_fee].append({
+                                'trans_no': str(trans_no).strip(),
+                                'original_amount': amount_val,
+                                'refunded_amount': refunded_amount,
+                                'merchant': str(merchant).strip() if merchant else ''
+                            })
+                            # 仍然存储原金额用于普通匹配
+                            if amount_val not in amount_to_trans:
+                                amount_to_trans[amount_val] = []
+                            amount_to_trans[amount_val].append(str(trans_no).strip())
+                            if merchant:
+                                amount_to_merchant[amount_val] = str(merchant).strip()
+                            continue
+
                     # 只保留非零金额
                     if amount_val > 0:
                         # 使用列表存储相同金额的交易单号，解决重复金额覆盖问题
@@ -182,11 +218,11 @@ def load_wechat_bill_data(bill_path):
                             amount_to_merchant[amount_val] = str(merchant).strip()
 
         wb.close()
-        return amount_to_trans, amount_to_merchant
+        return amount_to_trans, amount_to_merchant, refund_fee_to_trans
 
     except Exception as e:
         print(f"  ⚠️ 读取微信支付账单失败: {e}")
-        return {}, {}
+        return {}, {}, {}
 
 
 def extract_amounts_from_didi_trip(pdf_path):
@@ -395,13 +431,15 @@ def match_and_add_transaction_numbers(input_dir, work_dir, report_path='data_rep
 
     print(f"  ✓ 找到微信支付账单: {os.path.basename(bill_path)}")
 
-    # 2. 加载账单数据
-    amount_to_trans, amount_to_merchant = load_wechat_bill_data(bill_path)
-    if not amount_to_trans:
+    # 2. 加载账单数据（包括退票费映射用于tuigai单据）
+    amount_to_trans, amount_to_merchant, refund_fee_to_trans = load_wechat_bill_data(bill_path)
+    if not amount_to_trans and not refund_fee_to_trans:
         print("  ⚠️ 未能从账单中提取有效数据")
         return False
 
     print(f"  ✓ 从账单中提取了 {len(amount_to_trans)} 条交易记录")
+    if refund_fee_to_trans:
+        print(f"  ✓ 从账单中提取了 {sum(len(v) for v in refund_fee_to_trans.values())} 条退票费记录")
 
     # 3. 加载data_report获取文件明细
     file_details_map = {}
@@ -487,15 +525,23 @@ def match_and_add_transaction_numbers(input_dir, work_dir, report_path='data_rep
                                     })
                                     break  # 模糊匹配成功后跳出该金额的遍历
         else:
-            # 其他发票（机票、住宿等）：使用预提取的金额
+            # 其他发票（机票、住宿、退改签等）：使用预提取的金额
             amount = file_info.get('amount')
             # 如果没有预提取的数据，尝试实时提取
             if amount is None:
                 amount, _ = extract_amount_from_pdf(pdf_path, ftype)
             if amount:
-                if amount in amount_to_trans and amount_to_trans[amount]:
-                    trans_no = amount_to_trans[amount].pop(0)
-                    trans_numbers.append((1, trans_no))
+                # tuigai类型使用退票费映射匹配
+                if ftype == 'tuigai':
+                    if amount in refund_fee_to_trans and refund_fee_to_trans[amount]:
+                        refund_info = refund_fee_to_trans[amount].pop(0)
+                        trans_no = refund_info['trans_no']
+                        trans_numbers.append((1, trans_no))
+                else:
+                    # 其他类型使用普通金额映射
+                    if amount in amount_to_trans and amount_to_trans[amount]:
+                        trans_no = amount_to_trans[amount].pop(0)
+                        trans_numbers.append((1, trans_no))
 
         # 如果有匹配的交易单号，添加到PDF
         if trans_numbers:
