@@ -301,7 +301,7 @@ cd Ofd2Pdf
 
 1. **复制模板文件**
    ```bash
-   cp config.example.yaml config.yaml
+   cp scripts/config.example.yaml config.yaml
    ```
 
 2. **编辑 config.yaml**
@@ -608,7 +608,8 @@ python3 scripts/invoice_processor.py \
 
 ```python
 import sys
-sys.path.insert(0, '/root/.claude/skills/baoxiao/scripts')
+# 在 skill 根目录执行该示例
+sys.path.insert(0, 'scripts')
 from invoice_processor import process_invoices, generate_data_report, load_data_report
 
 # 阶段1: 数据提取
@@ -716,4 +717,4 @@ MIT License
 
 ---
 
-**提示**：此工具为 Claude Code Skill，需在 Claude Code 环境中使用。核心处理脚本 `scripts/invoice_processor.py` 也可独立运行。
+**提示**：此工具可作为技能在不同宿主环境中使用；文档中的路径示例均以 skill 根目录为基准。核心处理脚本 `scripts/invoice_processor.py` 也可独立运行。

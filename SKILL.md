@@ -28,6 +28,11 @@ cp -r 发票 bak
 
 采用三阶段模型： 提取 → 写入 → 合并
 
+以下命令示例均假设**当前工作目录为 skill 根目录**，因此统一使用相对路径：
+- 处理脚本：`scripts/invoice_processor.py`
+- 环境说明：`references/env-setup.md`
+- 配置文件模板：`scripts/config.example.yaml`
+- 内置默认配置：`scripts/config.yaml`
 
 ### 阶段1: 数据提取（--extract-only）
 
@@ -44,15 +49,15 @@ cp -r 发票 bak
 5. 生成 `data_report.json`
 
 ```bash
-python3 ~/.claude/skills/baoxiao/scripts/invoice_processor.py \
+python3 scripts/invoice_processor.py \
   --input-dir 发票 --extract-only
 ```
 
 ### 阶段2: 数据写入（--write-data）
 
 **前置检查**：
-1. 检查配置文件~/.claude/skills/baoxiao/scripts/config.yaml是否存在，若不存在则询问用户城市单位映射，并采用bash方式2
-2. 检查若 `data_report.json` 中是否有 `unknown_cities`（即城市未在config.yaml中配置），如果有**必须暂停询问用户，提供以下三种选项供用户选择**：
+1. 检查配置文件 `config.yaml` 是否存在；若当前工作目录没有，则脚本会继续查找 `scripts/config.yaml` 和 `~/.config/baoxiao/config.yaml`
+2. 检查若 `data_report.json` 中是否有 `unknown_cities`（即城市未在已加载配置中配置），如果有**必须暂停询问用户，提供以下三种选项供用户选择**：
 - 选项1：新增城市映射 → 添加到 `config.yaml`
 - 选项2：修正城市名称 → 修改 `data_report.json`（如"纺阳"→"沈阳"）
 - 选项3：删除该城市 → 从 `data_report.json` 移除
@@ -65,11 +70,11 @@ python3 ~/.claude/skills/baoxiao/scripts/invoice_processor.py \
 
 ```bash
 # 方式1：城市已在config.yaml中配置
-python3 ~/.claude/skills/baoxiao/scripts/invoice_processor.py \
+python3 scripts/invoice_processor.py \
   --output-excel biaoge.xlsx --work-dir . --write-data
 
 # 方式2：通过命令行临时指定城市单位映射（优先级低于config.yaml）
-python3 ~/.claude/skills/baoxiao/scripts/invoice_processor.py \
+python3 scripts/invoice_processor.py \
   --output-excel biaoge.xlsx --work-dir . --write-data \
   --city-units "城市A:单位A,城市B:单位B"
 ```
@@ -85,7 +90,7 @@ python3 ~/.claude/skills/baoxiao/scripts/invoice_processor.py \
 6. 滴滴*.pdf、交通费*.pdf
 
 ```bash
-python3 ~/.claude/skills/baoxiao/scripts/invoice_processor.py \
+python3 scripts/invoice_processor.py \
   --input-dir 发票 --work-dir . --merge-pdfs
 ```
 
@@ -94,7 +99,7 @@ python3 ~/.claude/skills/baoxiao/scripts/invoice_processor.py \
 无警告时自动完成三阶段：
 
 ```bash
-python3 ~/.claude/skills/baoxiao/scripts/invoice_processor.py \
+python3 scripts/invoice_processor.py \
   --input-dir 发票 --output-excel biaoge.xlsx --work-dir . \
   --merge-pdfs --auto --city-units "城市A:单位A"
 ```
