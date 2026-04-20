@@ -1877,6 +1877,16 @@ def write_to_excel(excel_path, sheet_name, summary, date_objects=None):
     wb = load_workbook(excel_path)
     ws = wb[sheet_name]
 
+    # 计算F10单元格的值：取实际金额与（差旅天数*80）中的较小值
+    didi_einvoice_amount = summary['didi_einvoice_amount']
+    if date_objects and date_objects.get('earliest') and date_objects.get('latest'):
+        trip_days = (date_objects['latest'] - date_objects['earliest']).days + 1
+        max_allowable = trip_days * 80
+        f10_value = min(didi_einvoice_amount, max_allowable)
+        print(f"\n  F10计算: 实际金额¥{didi_einvoice_amount}, 差旅天数{trip_days}天, 上限¥{max_allowable}, 取较小值¥{f10_value}")
+    else:
+        f10_value = didi_einvoice_amount
+
     updates = {
         'E4': summary.get('cities_str', ''),
         'E6': summary['huoche_count'],
@@ -1886,7 +1896,7 @@ def write_to_excel(excel_path, sheet_name, summary, date_objects=None):
         'E8': summary['tuigai_count'],
         'F8': summary['tuigai_amount'],
         'E10': summary['didi_count'],
-        'F10': summary['didi_einvoice_amount'],
+        'F10': f10_value,
         'O9': summary['zhusu_amount'],
     }
 
