@@ -34,6 +34,7 @@ TYPE_KEYWORDS = {
     'jipiao': ['航空', '航班', '承运人', '民航', '座位等级', '国内国际标识', '机场', '登机', '客票级别', '航班号'],
     'zhusu': ['住宿', '酒店', '宾馆', '住宿费', '房费', '旅店', '客房', '住宿服务'],
     'didi': ['滴滴', '网约车', '行程单', '出行', '快车', '专车'],
+    'toll': ['通行费', '入口站', '出口站', '入口时间', '出口时间', '收费公路通行费', '高速公路通行费', 'ETC'],
 }
 
 # 其他交通类发票关键字（归入滴滴类别）
@@ -42,21 +43,58 @@ TRANSPORT_KEYWORDS = [
     '城市通', '交通卡', '乘车码', '扫码乘车', '公共交通'
 ]
 
+# 高速通行费强关键字。需优先于机票/滴滴判断，避免“机场高速”误判为机票。
+TOLL_KEYWORDS = [
+    '通行费', '入口站', '出口站', '入口时间', '出口时间',
+    '收费公路通行费', '高速公路通行费', '代收通行费',
+    '通行费电子行程单', 'ETC', '广东联合电子服务股份有限公司'
+]
+
 # 用户确认的发票类型映射（用于记住用户选择）
 USER_CONFIRMED_TYPES = {}
 
 # 金额合理范围（用于校验）
 AMOUNT_RANGES = {
-    'tuigai': (5, 500),
+    'tuigai': (5, 2000),
     'huoche': (20, 3000),
     'jipiao': (300, 8000),
     'zhusu': (100, 3000),
     'didi': (2, 800),  # 包含地铁、公交等小额交通费用（通常2元起）
+    'toll': (1, 1000),
 }
 
 # OCR配置
 OCR_DPI_LOW = 200   # 用于类型识别
 OCR_DPI_HIGH = 400  # 用于日期精确识别
+
+
+# ============ 工作区准备函数 ============
+
+def prepare_invoice_workspace(invoice_dir='发票', backup_dir='bak'):
+    """
+    准备发票工作区。
+
+    - 如果 bak 不存在：将当前发票目录复制为 bak，保留原始副本。
+    - 如果 bak 已存在：删除当前发票目录，并从 bak 复制出干净的发票目录。
+    """
+    if os.path.exists(backup_dir):
+        if not os.path.isdir(backup_dir):
+            raise NotADirectoryError(f"备份路径不是目录: {backup_dir}")
+        if os.path.exists(invoice_dir):
+            shutil.rmtree(invoice_dir)
+        shutil.copytree(backup_dir, invoice_dir)
+        print(f"✓ 已从备份恢复干净发票目录: {backup_dir} -> {invoice_dir}")
+        return "restored_from_backup"
+
+    if not os.path.exists(invoice_dir):
+        raise FileNotFoundError(f"发票目录不存在，无法创建备份: {invoice_dir}")
+    if not os.path.isdir(invoice_dir):
+        raise NotADirectoryError(f"发票路径不是目录: {invoice_dir}")
+
+    shutil.copytree(invoice_dir, backup_dir)
+    print(f"✓ 已创建发票备份: {invoice_dir} -> {backup_dir}")
+    return "backup_created"
+
 
 # ============ 配置文件加载函数 ============
 
@@ -459,11 +497,62 @@ def match_and_add_transaction_numbers(input_dir, work_dir, report_path='data_rep
         print("  ⚠️ 发票目录中没有PDF文件")
         return False
 
+    def get_file_type(pdf_file):
+        file_info = file_details_map.get(pdf_file, {})
+        return file_info.get('type', '')
+
+    def match_sort_key(pdf_file):
+        ftype = get_file_type(pdf_file)
+        if ftype == 'didi_trip' or '滴滴出行行程报销单' in pdf_file:
+            return (0, pdf_file)
+        return (1, pdf_file)
+
+    def pdf_has_transaction_number(pdf_path):
+        try:
+            from pypdf import PdfReader
+            reader = PdfReader(pdf_path)
+            text = ""
+            for page in reader.pages:
+                text += page.extract_text()
+            return "交易单号" in text
+        except:
+            return False
+
+    def take_first_transaction(amount):
+        if amount in amount_to_trans and amount_to_trans[amount]:
+            return amount_to_trans[amount].pop(0)
+        return None
+
+    def take_fuzzy_didi_transaction(amount, pdf_file):
+        for bill_amount, trans_numbers_list in amount_to_trans.items():
+            diff = bill_amount - amount
+            # 差额在0.01到10元之间，且交易对方是"滴滴出行"
+            if 0.01 <= diff <= 10:
+                merchant = amount_to_merchant.get(bill_amount, '')
+                if '滴滴' in merchant and trans_numbers_list:
+                    trans_no = trans_numbers_list.pop(0)
+                    # 记录模糊匹配情况
+                    fuzzy_matches.append({
+                        'file': pdf_file,
+                        'invoice_amount': amount,
+                        'bill_amount': bill_amount,
+                        'diff': diff,
+                        'merchant': merchant
+                    })
+                    return trans_no
+        return None
+
+    def take_refund_transaction(amount):
+        if amount in refund_fee_to_trans and refund_fee_to_trans[amount]:
+            refund_info = refund_fee_to_trans[amount].pop(0)
+            return refund_info['trans_no']
+        return None
+
     print(f"\n[步骤0.1] 开始匹配交易单号到发票PDF...")
 
     matched_count = 0
     fuzzy_matches = []  # 存储模糊匹配的记录
-    for pdf_file in pdf_files:
+    for pdf_file in sorted(pdf_files, key=match_sort_key):
         pdf_path = os.path.join(input_dir, pdf_file)
 
         # 跳过非发票PDF（如已经处理过的备份文件）
@@ -473,15 +562,12 @@ def match_and_add_transaction_numbers(input_dir, work_dir, report_path='data_rep
         # 从file_details获取该文件的信息
         file_info = file_details_map.get(pdf_file, {})
         ftype = file_info.get('type', '')
-        pdf_path = os.path.join(input_dir, pdf_file)
 
-        # 跳过非发票PDF（如已经处理过的备份文件）
-        if pdf_file.startswith('.'):
+        # 检查PDF是否已经包含交易单号，避免重复添加（除非force_mark=True）。
+        # 必须先检查，再消费账单里的交易单号。
+        if not force_mark and pdf_has_transaction_number(pdf_path):
+            print(f"  ✓ {pdf_file}: 已有交易单号，跳过添加")
             continue
-
-        # 从file_details获取该文件的信息
-        file_info = file_details_map.get(pdf_file, {})
-        ftype = file_info.get('type', '')
 
         trans_numbers = []
 
@@ -494,36 +580,18 @@ def match_and_add_transaction_numbers(input_dir, work_dir, report_path='data_rep
             if amounts:
                 idx = 1
                 for amount in amounts:
-                    matched = False
                     # 第一步：精确匹配（允许0.01元误差）
-                    if amount in amount_to_trans and amount_to_trans[amount]:
-                        trans_no = amount_to_trans[amount].pop(0)  # 取出第一个并删除
+                    trans_no = take_first_transaction(amount)
+                    if trans_no:
                         trans_numbers.append((idx, trans_no))
                         idx += 1
-                        matched = True
                         continue  # 精确匹配成功后跳过模糊匹配，继续处理下一笔金额
 
                     # 第二步：如果精确匹配失败，尝试模糊匹配（仅适用于滴滴行程单）
-                    if not matched:
-                        for bill_amount, trans_numbers_list in amount_to_trans.items():
-                            diff = bill_amount - amount
-                            # 差额在0.01到10元之间，且交易对方是"滴滴出行"
-                            if 0.01 <= diff <= 10:
-                                merchant = amount_to_merchant.get(bill_amount, '')
-                                if '滴滴' in merchant and trans_numbers_list:
-                                    trans_no = trans_numbers_list.pop(0)
-                                    trans_numbers.append((idx, trans_no))
-                                    idx += 1
-                                    matched = True
-                                    # 记录模糊匹配情况
-                                    fuzzy_matches.append({
-                                        'file': pdf_file,
-                                        'invoice_amount': amount,
-                                        'bill_amount': bill_amount,
-                                        'diff': diff,
-                                        'merchant': merchant
-                                    })
-                                    break  # 模糊匹配成功后跳出该金额的遍历
+                    trans_no = take_fuzzy_didi_transaction(amount, pdf_file)
+                    if trans_no:
+                        trans_numbers.append((idx, trans_no))
+                        idx += 1
         else:
             # 其他发票（机票、住宿、退改签等）：使用预提取的金额
             amount = file_info.get('amount')
@@ -533,44 +601,24 @@ def match_and_add_transaction_numbers(input_dir, work_dir, report_path='data_rep
             if amount:
                 # tuigai类型使用退票费映射匹配
                 if ftype == 'tuigai':
-                    if amount in refund_fee_to_trans and refund_fee_to_trans[amount]:
-                        refund_info = refund_fee_to_trans[amount].pop(0)
-                        trans_no = refund_info['trans_no']
+                    trans_no = take_refund_transaction(amount)
+                    if trans_no:
                         trans_numbers.append((1, trans_no))
                 else:
                     # 其他类型使用普通金额映射
-                    if amount in amount_to_trans and amount_to_trans[amount]:
-                        trans_no = amount_to_trans[amount].pop(0)
+                    trans_no = take_first_transaction(amount)
+                    if trans_no:
                         trans_numbers.append((1, trans_no))
 
         # 如果有匹配的交易单号，添加到PDF
         if trans_numbers:
             output_pdf = os.path.join(work_dir, f'标记_{pdf_file}')
-
-            # 检查PDF是否已经包含交易单号，避免重复添加（除非force_mark=True）
-            needs_marking = True
-            if not force_mark:
-                try:
-                    from pypdf import PdfReader
-                    reader = PdfReader(pdf_path)
-                    text = ""
-                    for page in reader.pages:
-                        text += page.extract_text()
-                    if "交易单号" in text:
-                        needs_marking = False
-                        break
-                except:
-                    pass  # 读取失败时继续处理
-
-            if needs_marking:
-                if add_transaction_numbers_to_pdf(pdf_path, output_pdf, trans_numbers):
-                    # 用标记后的文件替换原文件
-                    shutil.move(output_pdf, pdf_path)
-                    trans_list = ", ".join([f"[{n}]" for n, _ in trans_numbers])
-                    print(f"  ✓ {pdf_file}: 添加了 {len(trans_numbers)} 个交易单号 {trans_list}")
-                    matched_count += 1
-            else:
-                print(f"  ✓ {pdf_file}: 已有交易单号，跳过添加")
+            if add_transaction_numbers_to_pdf(pdf_path, output_pdf, trans_numbers):
+                # 用标记后的文件替换原文件
+                shutil.move(output_pdf, pdf_path)
+                trans_list = ", ".join([f"[{n}]" for n, _ in trans_numbers])
+                print(f"  ✓ {pdf_file}: 添加了 {len(trans_numbers)} 个交易单号 {trans_list}")
+                matched_count += 1
 
     print(f"\n  ✓ 共为 {matched_count} 个PDF文件添加了交易单号")
 
@@ -635,6 +683,10 @@ def identify_invoice_type(text, filename, interactive=True):
     # 检查缓存的用户确认结果
     if filename in USER_CONFIRMED_TYPES:
         return USER_CONFIRMED_TYPES[filename]
+
+    if is_toll_invoice_text(text):
+        print(f"  检测到高速通行费关键词，归入高速费类别: {filename}")
+        return 'toll'
 
     scores = {}
     for inv_type, keywords in TYPE_KEYWORDS.items():
@@ -705,6 +757,22 @@ def identify_invoice_type(text, filename, interactive=True):
     return max_type
 
 
+def is_toll_invoice_text(text):
+    """判断文本是否为高速通行费发票或通行费电子行程单。"""
+    if any(k in text for k in ['通行费电子行程单', '代收通行费', '收费公路通行费', '高速公路通行费', 'ETC']):
+        return True
+    if '通行费' in text and ('发票号码' in text or '价税合计' in text):
+        return True
+    station_keywords = sum(1 for k in ['入口站', '出口站', '入口时间', '出口时间', '交易金额'] if k in text)
+    if station_keywords >= 3:
+        return True
+    if '入口：' in text and '出口：' in text and '通行费' in text:
+        return True
+    if '广东联合电子服务股份有限公司' in text and '行程信息' in text:
+        return True
+    return False
+
+
 def classify_didi_subtype(text):
     """区分滴滴电子发票和行程单"""
     if '电子发票' in text and '发票号码' in text:
@@ -712,6 +780,45 @@ def classify_didi_subtype(text):
     elif '行程单' in text or 'TRIP TABLE' in text.upper():
         return 'didi_trip'
     return 'didi_other'
+
+
+def classify_toll_subtype(text):
+    """区分高速费电子发票和通行费行程单"""
+    if '通行费电子行程单' in text or ('入口站' in text and '出口站' in text and '交易金额' in text):
+        return 'toll_trip'
+    if '电子发票' in text and '发票号码' in text:
+        return 'toll_einvoice'
+    return 'toll_einvoice'
+
+
+def build_invoice_rename(ftype, count):
+    """根据发票类型和序号生成规范文件名"""
+    if ftype == 'tuigai':
+        return f"tuigai{count}.pdf"
+    if ftype == 'huoche':
+        return f"huoche{count}.pdf"
+    if ftype == 'jipiao':
+        return f"jipiao{count}.pdf"
+    if ftype == 'zhusu':
+        return f"zhusu{count}.pdf"
+    if ftype == 'didi_einvoice':
+        letter = chr(ord('A') + count - 1)
+        return f"滴滴电子发票{letter}.pdf"
+    if ftype == 'didi_trip':
+        letter = chr(ord('A') + count - 1)
+        return f"滴滴出行行程报销单{letter}.pdf"
+    if ftype == 'didi_other':
+        letter = chr(ord('A') + count - 1)
+        return f"交通费发票{letter}.pdf"
+    if ftype == 'toll_einvoice':
+        letter = chr(ord('A') + count - 1)
+        return f"高速费发票{letter}.pdf"
+    if ftype == 'toll_trip':
+        letter = chr(ord('A') + count - 1)
+        return f"高速费行程单{letter}.pdf"
+    if ftype == 'unknown':
+        return f"未分类_{count}.pdf"
+    return f"其他_{count}.pdf"
 
 
 # ============ 城市提取函数 ============
@@ -946,13 +1053,13 @@ def extract_amount_from_pdf(pdf_path, inv_type=None):
 
     # 匹配金额模式（按优先级）
     patterns = [
+        (r'价税合计.*?[（(]\s*小写\s*[）)].*?[¥￥]?\s*([\d,]+\.\d{2})', '价税合计(小写)'),
+        (r'价税合计.*?[¥￥]\s*([\d,]+\.\d{2})', '价税合计'),
+        (r'价税合计.*?([\d,]+\.\d{2})', '价税合计(纯数字)'),
         (r'退票费.*?[¥￥]\s*([\d,]+\.\d{2})', '退票费(后)'),
         (r'[¥￥]\s*([\d,]+\.\d{2})\s*退票费', '退票费(前)'),
         (r'改签费.*?[¥￥]\s*([\d,]+\.\d{2})', '改签费(后)'),
         (r'[¥￥]\s*([\d,]+\.\d{2})\s*改签费', '改签费(前)'),
-        (r'价税合计.*?\(小写\).*?¥?\s*([\d,]+\.\d{2})', '价税合计(小写)'),
-        (r'价税合计.*?[¥￥]\s*([\d,]+\.\d{2})', '价税合计'),
-        (r'价税合计.*?([\d,]+\.\d{2})', '价税合计(纯数字)'),
         (r'合\s*计.*?CNY\s*([\d,]+\.\d{2})', '合计CNY'),
         (r'合\s*计.*?[¥￥]\s*([\d,]+\.\d{2})', '合计'),
     ]
@@ -1400,6 +1507,8 @@ def process_invoices(input_dir, output_excel=None, sheet_name='sheet1', rename_f
         # 进一步细分滴滴类型
         if inv_type == 'didi':
             inv_type = classify_didi_subtype(text)
+        elif inv_type == 'toll':
+            inv_type = classify_toll_subtype(text)
 
         file_types[filename] = inv_type
         print(f"  {filename} -> {inv_type}")
@@ -1407,47 +1516,12 @@ def process_invoices(input_dir, output_excel=None, sheet_name='sheet1', rename_f
     # 步骤2: 重命名文件（可选）
     if rename_files:
         print("\n[步骤2] 重命名文件...")
-        backup_dir = "/tmp/invoice_backup"
-        os.makedirs(backup_dir, exist_ok=True)
-
-        for filename in pdf_files:
-            shutil.copy2(os.path.join(input_dir, filename), backup_dir)
-
         counters = defaultdict(int)
-        didi_e_count = 0
-        didi_t_count = 0
-        didi_o_count = 0  # 其他交通费发票计数器
 
         rename_map = {}
         for old_name, ftype in file_types.items():
             counters[ftype] += 1
-
-            if ftype == 'tuigai':
-                new_name = f"tuigai{counters[ftype]}.pdf"
-            elif ftype == 'huoche':
-                new_name = f"huoche{counters[ftype]}.pdf"
-            elif ftype == 'jipiao':
-                new_name = f"jipiao{counters[ftype]}.pdf"
-            elif ftype == 'zhusu':
-                new_name = f"zhusu{counters[ftype]}.pdf"
-            elif ftype == 'didi_einvoice':
-                didi_e_count += 1
-                letter = chr(ord('A') + didi_e_count - 1)
-                new_name = f"滴滴电子发票{letter}.pdf"
-            elif ftype == 'didi_trip':
-                didi_t_count += 1
-                letter = chr(ord('A') + didi_t_count - 1)
-                new_name = f"滴滴出行行程报销单{letter}.pdf"
-            elif ftype == 'didi_other':
-                # 地铁、公交等其他交通类发票
-                didi_o_count += 1
-                letter = chr(ord('A') + didi_o_count - 1)
-                new_name = f"交通费发票{letter}.pdf"
-            elif ftype == 'unknown':
-                # 用户选择跳过的发票
-                new_name = f"未分类_{counters[ftype]}.pdf"
-            else:
-                new_name = f"其他_{counters[ftype]}.pdf"
+            new_name = build_invoice_rename(ftype, counters[ftype])
 
             rename_map[old_name] = new_name
 
@@ -1488,6 +1562,8 @@ def process_invoices(input_dir, output_excel=None, sheet_name='sheet1', rename_f
         'didi_einvoice': {'count': 0, 'amounts': []},
         'didi_trip': {'count': 0, 'amounts': []},  # 行程报销单，不计入金额（与电子发票重复）
         'didi_other': {'count': 0, 'amounts': []},  # 其他交通费发票（地铁、公交等）
+        'toll_einvoice': {'count': 0, 'amounts': []},
+        'toll_trip': {'count': 0, 'amounts': []},  # 通行费行程单，不计入金额（与发票重复）
         'tuigai': {'count': 0, 'amounts': []},
     }
 
@@ -1516,7 +1592,14 @@ def process_invoices(input_dir, output_excel=None, sheet_name='sheet1', rename_f
 
         # 金额校验（跳过 unknown 类型）
         if amount and ftype != 'unknown':
-            valid, msg = validate_amount(ftype.replace('didi_einvoice', 'didi').replace('didi_trip', 'didi').replace('didi_other', 'didi'), amount, filename)
+            validate_type = (
+                ftype.replace('didi_einvoice', 'didi')
+                .replace('didi_trip', 'didi')
+                .replace('didi_other', 'didi')
+                .replace('toll_einvoice', 'toll')
+                .replace('toll_trip', 'toll')
+            )
+            valid, msg = validate_amount(validate_type, amount, filename)
             if not valid:
                 all_warnings.append(f"{filename}: {msg}")
 
@@ -1573,10 +1656,15 @@ def process_invoices(input_dir, output_excel=None, sheet_name='sheet1', rename_f
                 base_type = 'didi_trip'
             else:
                 base_type = 'didi_other'  # 其他交通费（地铁、公交等）
+        elif 'toll' in ftype:
+            if 'trip' in ftype:
+                base_type = 'toll_trip'
+            else:
+                base_type = 'toll_einvoice'
 
         if base_type in data:
             data[base_type]['count'] += 1
-            if amount and 'amounts' in data[base_type]:
+            if amount and 'amounts' in data[base_type] and base_type != 'toll_trip':
                 data[base_type]['amounts'].append(amount)
 
         # 添加到文件明细列表
@@ -1587,6 +1675,7 @@ def process_invoices(input_dir, output_excel=None, sheet_name='sheet1', rename_f
 
     # 计算总滴滴文件数（电子发票+行程单）
     total_didi = data['didi_einvoice']['count'] + data['didi_trip']['count']
+    total_toll = data['toll_einvoice']['count'] + data['toll_trip']['count']
 
     # 保存日期对象供后续使用
     earliest_date_obj = min(data['jipiao']['dates']) if data['jipiao']['dates'] else None
@@ -1609,6 +1698,8 @@ def process_invoices(input_dir, output_excel=None, sheet_name='sheet1', rename_f
         'tuigai_amount': sum(data['tuigai']['amounts']),
         'didi_count': total_didi,
         'didi_einvoice_amount': sum(data['didi_einvoice']['amounts']) + sum(data['didi_other']['amounts']),  # 只计算电子发票+其他交通费，排除行程报销单（与发票重复）
+        'toll_count': total_toll,
+        'toll_amount': sum(data['toll_einvoice']['amounts']),
         'zhusu_amount': sum(data['zhusu']['amounts']),
         'cities': sorted_cities,
         'cities_str': cities_str,
@@ -1641,7 +1732,8 @@ def process_invoices(input_dir, output_excel=None, sheet_name='sheet1', rename_f
             print(f"    最早日期: {summary['jipiao_earliest_date']}")
         if summary['jipiao_latest_date']:
             print(f"    最晚日期: {summary['jipiao_latest_date']}")
-        print(f"    滴滴: {summary['didi_count']}张, 金额¥{summary['didi_einvoice_amount']}")
+        print(f"    滴滴/交通: {summary['didi_count']}张, 金额¥{summary['didi_einvoice_amount']}")
+        print(f"    高速费: {summary['toll_count']}张, 金额¥{summary['toll_amount']}")
         print(f"    住宿: 金额¥{summary['zhusu_amount']}")
 
         should_write = True
@@ -1682,6 +1774,7 @@ def process_invoices(input_dir, output_excel=None, sheet_name='sheet1', rename_f
                 print(f"  最晚日期: {summary['jipiao_latest_date']}")
             print(f"  住宿: 金额¥{summary['zhusu_amount']}")
             print(f"  滴滴/交通: {summary['didi_count']}张, 金额¥{summary['didi_einvoice_amount']}")
+            print(f"  高速费: {summary['toll_count']}张, 金额¥{summary['toll_amount']}")
             print("="*60)
 
             # 如果使用了 --force-write，直接写入不询问
@@ -1877,15 +1970,16 @@ def write_to_excel(excel_path, sheet_name, summary, date_objects=None):
     wb = load_workbook(excel_path)
     ws = wb[sheet_name]
 
-    # 计算F10单元格的值：取实际金额与（差旅天数*80）中的较小值
-    didi_einvoice_amount = summary['didi_einvoice_amount']
+    # 计算F10单元格的值：市内交通费包含滴滴/其他交通和高速费发票金额。
+    local_transport_amount = summary['didi_einvoice_amount'] + summary.get('toll_amount', 0)
+    local_transport_count = summary['didi_count'] + summary.get('toll_count', 0)
     if date_objects and date_objects.get('earliest') and date_objects.get('latest'):
         trip_days = (date_objects['latest'] - date_objects['earliest']).days + 1
         max_allowable = trip_days * 80
-        f10_value = min(didi_einvoice_amount, max_allowable)
-        print(f"\n  F10计算: 实际金额¥{didi_einvoice_amount}, 差旅天数{trip_days}天, 上限¥{max_allowable}, 取较小值¥{f10_value}")
+        f10_value = min(local_transport_amount, max_allowable)
+        print(f"\n  F10计算: 实际金额¥{local_transport_amount}, 差旅天数{trip_days}天, 上限¥{max_allowable}, 取较小值¥{f10_value}")
     else:
-        f10_value = didi_einvoice_amount
+        f10_value = local_transport_amount
 
     updates = {
         'E4': summary.get('cities_str', ''),
@@ -1895,7 +1989,7 @@ def write_to_excel(excel_path, sheet_name, summary, date_objects=None):
         'F7': summary['jipiao_amount'],
         'E8': summary['tuigai_count'],
         'F8': summary['tuigai_amount'],
-        'E10': summary['didi_count'],
+        'E10': local_transport_count,
         'F10': f10_value,
         'O9': summary['zhusu_amount'],
     }
@@ -2339,6 +2433,7 @@ def collect_pdfs_in_order(invoice_dir, work_dir):
         ('tuigai', ['tuigai*.pdf']),
         ('zhusu', ['zhusu*.pdf']),
         ('didi', ['滴滴*.pdf', '交通费*.pdf']),
+        ('toll', ['高速费*.pdf']),
     ]
 
     collected_files = []
@@ -2419,6 +2514,7 @@ def generate_data_report(result, output_path='data_report.json', config=None):
             'huoche': summary.get('huoche_amount', 0),
             'tuigai': summary.get('tuigai_amount', 0),
             'didi': summary.get('didi_einvoice_amount', 0),
+            'toll': summary.get('toll_amount', 0),
             'zhusu': summary.get('zhusu_amount', 0),
         },
         'counts': {
@@ -2426,6 +2522,7 @@ def generate_data_report(result, output_path='data_report.json', config=None):
             'huoche': summary.get('huoche_count', 0),
             'tuigai': summary.get('tuigai_count', 0),
             'didi': summary.get('didi_count', 0),
+            'toll': summary.get('toll_count', 0),
         },
         'file_details': result.get('file_details', []),
         'warnings': result.get('warnings', []),
@@ -2518,6 +2615,15 @@ if __name__ == '__main__':
             print("❌ 请提供 --input-dir 参数")
             exit(1)
 
+        # 每次重新提取前都使用干净发票副本，避免上次重命名、OFD转换、
+        # PDF标记交易单号等处理结果影响本次识别。
+        backup_dir = os.path.join(os.path.dirname(args.input_dir) or '.', 'bak')
+        try:
+            prepare_invoice_workspace(args.input_dir, backup_dir)
+        except Exception as e:
+            print(f"❌ 发票备份/恢复失败: {e}")
+            exit(1)
+
         print("\n" + "="*60)
         print("【阶段1】提取发票数据")
         print("="*60)
@@ -2542,6 +2648,7 @@ if __name__ == '__main__':
         print(f"日期: {report['dates']['earliest']} 至 {report['dates']['latest']}")
         print(f"住宿: ¥{report['amounts']['zhusu']}")
         print(f"滴滴: {report['counts']['didi']}张, ¥{report['amounts']['didi']}")
+        print(f"高速费: {report['counts'].get('toll', 0)}张, ¥{report['amounts'].get('toll', 0)}")
 
         # 显示未知城市警告
         if report.get('unknown_cities'):
@@ -2636,6 +2743,8 @@ if __name__ == '__main__':
                 'tuigai_amount': report['amounts'].get('tuigai', 0),
                 'didi_count': report['counts']['didi'],
                 'didi_einvoice_amount': report['amounts']['didi'],
+                'toll_count': report['counts'].get('toll', 0),
+                'toll_amount': report['amounts'].get('toll', 0),
                 'zhusu_amount': report['amounts']['zhusu'],
                 'jipiao_earliest_date': report['dates']['earliest'],
                 'jipiao_latest_date': report['dates']['latest'],
@@ -2688,6 +2797,7 @@ if __name__ == '__main__':
                 report['amounts']['huoche'] +
                 report['amounts'].get('tuigai', 0) +
                 report['amounts']['didi'] +
+                report['amounts'].get('toll', 0) +
                 report['amounts']['zhusu'] +
                 meal_allowance
             )
