@@ -8,8 +8,6 @@ __pycache__/
 # Codex local state
 .codex
 
-# 个人配置文件（包含敏感信息）
-scripts/config.yaml
 
 # IDE
 .idea/

@@ -692,9 +692,11 @@ def identify_invoice_type(text, filename, interactive=True):
     for inv_type, keywords in TYPE_KEYWORDS.items():
         scores[inv_type] = sum(1 for k in keywords if k in text)
 
-    # 优先检查退改签特征（包含退票费/改签费的PDF应优先识别为退改签）
-    if '退票费' in text or '改签费' in text:
-        scores['tuigai'] += 10  # 提高退改签优先级
+    # 优先检查退改签特征（包含退票费/退票手续费/改签费的PDF应优先识别为退改签）
+    if any(k in text for k in ['退票费', '退票手续费', '改签费', '变更手续费', '退改签']):
+        scores['tuigai'] += 20  # 提高退改签优先级
+        # 退票类文本常同时带有航空关键词，直接压过机票分数
+        scores['jipiao'] = min(scores['jipiao'], 1)
 
     max_type = max(scores, key=scores.get)
     max_score = scores[max_type]
@@ -858,6 +860,27 @@ def extract_cities_from_pdf(pdf_path, inv_type):
         city = re.sub(r'[东南西北]$', '', city.strip())
         return city
 
+    def is_valid_city_token(city, extra_blocklist=None):
+        """过滤明显不是城市的 token。"""
+        if not city:
+            return False
+        city = city.strip()
+        if not city or len(city) > 10:
+            return False
+        if re.fullmatch(r'[0-9.]+', city):
+            return False
+        if re.search(r'\d', city):
+            return False
+        if city.upper() == 'CNY':
+            return False
+        blocked = {
+            '城市', '地点', '目的', '出发', '到达', '自', '至',
+            '国际', '国内', '大型', '四川省', '税务局', '发票号', '开票日'
+        }
+        if extra_blocklist:
+            blocked.update(extra_blocklist)
+        return city not in blocked
+
     if inv_type == 'jipiao':
         # 机票：查找出发和到达城市
         # 常见格式："自: 绵阳 南郊" "至: 北京 大兴" 或 "自: PKX 北京" "至:CTU 成都"
@@ -874,14 +897,14 @@ def extract_cities_from_pdf(pdf_path, inv_type):
                         city = normalize_city_name(word2)
                     else:
                         city = normalize_city_name(word1)
-                    if city and city not in ['城市', '地点', '目的', '出发', '到达', '自'] and len(city) <= 10:
+                    if is_valid_city_token(city):
                         cities.add(city)
                 else:
                     # 只有一个词的情况
                     match = re.search(r'自\s*[:：]\s*(\S+)', line)
                     if match:
                         city = normalize_city_name(match.group(1).strip())
-                        if city and city not in ['城市', '地点', '目的', '出发', '到达', '自'] and len(city) <= 10:
+                        if is_valid_city_token(city):
                             cities.add(city)
 
             # 匹配 "至: 北京 大兴" 或 "至:CTU 成都" 这种格式
@@ -895,14 +918,14 @@ def extract_cities_from_pdf(pdf_path, inv_type):
                         city = normalize_city_name(word2)
                     else:
                         city = normalize_city_name(word1)
-                    if city and city not in ['城市', '地点', '目的', '出发', '到达', '至'] and len(city) <= 10:
+                    if is_valid_city_token(city):
                         cities.add(city)
                 else:
                     # 只有一个词的情况
                     match = re.search(r'至\s*[:：]\s*(\S+)', line)
                     if match:
                         city = normalize_city_name(match.group(1).strip())
-                        if city and city not in ['城市', '地点', '目的', '出发', '到达', '至'] and len(city) <= 10:
+                        if is_valid_city_token(city):
                             cities.add(city)
 
         # 其他常见格式
@@ -919,11 +942,11 @@ def extract_cities_from_pdf(pdf_path, inv_type):
                 if isinstance(match, tuple):
                     for city in match:
                         city = city.strip()
-                        if city and city not in ['城市', '地点', '目的'] and len(city) <= 10:
+                        if is_valid_city_token(city):
                             cities.add(city)
                 else:
                     city = match.strip()
-                    if city and city not in ['城市', '地点', '目的'] and len(city) <= 10:
+                    if is_valid_city_token(city):
                         cities.add(city)
 
         # 额外处理：查找常见的机场城市名称（基于上下文）
@@ -932,7 +955,7 @@ def extract_cities_from_pdf(pdf_path, inv_type):
         airport_matches = re.findall(airport_pattern, text)
         for city in airport_matches:
             city = normalize_city_name(city.strip())
-            if city and city not in ['国际', '国内', '大型'] and len(city) <= 10:
+            if is_valid_city_token(city, {'国际', '国内', '大型'}):
                 cities.add(city)
 
     elif inv_type == 'huoche':
@@ -953,11 +976,11 @@ def extract_cities_from_pdf(pdf_path, inv_type):
                 if isinstance(match, tuple):
                     for station in match:
                         city = normalize_city_name(station.strip())
-                        if city and len(city) <= 10:
+                        if is_valid_city_token(city):
                             cities.add(city)
                 else:
                     city = normalize_city_name(match.strip())
-                    if city and len(city) <= 10:
+                    if is_valid_city_token(city):
                         cities.add(city)
 
         # 查找 "站名" 后面的车站名称
@@ -965,7 +988,7 @@ def extract_cities_from_pdf(pdf_path, inv_type):
         station_matches = re.findall(station_name_pattern, text)
         for station in station_matches:
             city = normalize_city_name(station.strip())
-            if city and len(city) <= 10:
+            if is_valid_city_token(city):
                 cities.add(city)
 
         # 额外处理：处理两行格式的火车站信息（如"绵阳\n站"）
@@ -983,7 +1006,7 @@ def extract_cities_from_pdf(pdf_path, inv_type):
                 # 只有附近有"站"才认为是车站城市
                 if (same_line_has_zhan or next_line_has_zhan):
                     city = normalize_city_name(city_name)
-                    if city and city not in ['城市', '地点', '目的', '出发', '到达', '四川省', '税务局', '发票号', '开票日'] and len(city) <= 10:
+                    if is_valid_city_token(city):
                         cities.add(city)
 
     # 过滤掉"北京"及其变体

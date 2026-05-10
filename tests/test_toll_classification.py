@@ -242,6 +242,34 @@ def test_existing_invoice_types_still_classify_normally():
     assert processor.identify_invoice_type(subway_text, "subway.pdf", interactive=False) == "didi_other"
 
 
+def test_flight_city_extraction_ignores_numeric_cny_token():
+    flight_text = """
+    航空运输电子客票行程单
+    自: 深圳 宝安 T3
+    至: CNY 550.46
+    至: 武汉 天河 T3
+    """
+
+    with patch.object(processor.pdfplumber, "open", return_value=FakePdf(flight_text)):
+        cities, _ = processor.extract_cities_from_pdf("unused.pdf", "jipiao")
+
+    assert set(cities) == {"深圳", "武汉"}
+    assert "550.46" not in cities
+
+
+def test_refund_invoice_with_airline_keywords_is_classified_as_tuigai():
+    refund_text = """
+    电子发票（普通发票）
+    项目名称 *现代服务*退票手续费
+    销方名称：中国南方航空股份有限公司
+    航空运输电子客票行程单 航班号 CA1234 承运人 中国南方航空 座位等级 经济舱
+    ET票号：7842178493713 吴国溧 北京-武汉 2026-05-06
+    价税合计（小写）¥278.00
+    """
+
+    assert processor.identify_invoice_type(refund_text, "refund.pdf", interactive=False) == "tuigai"
+
+
 def test_excel_local_transport_includes_toll_amount_once():
     with tempfile.TemporaryDirectory() as tmpdir:
         workbook_path = os.path.join(tmpdir, "biaoge.xlsx")
