@@ -55,7 +55,7 @@ USER_CONFIRMED_TYPES = {}
 
 # 金额合理范围（用于校验）
 AMOUNT_RANGES = {
-    'tuigai': (5, 2000),
+    'tuigai': (1, 2000),
     'huoche': (20, 3000),
     'jipiao': (300, 8000),
     'zhusu': (100, 3000),
@@ -1579,7 +1579,7 @@ def process_invoices(input_dir, output_excel=None, sheet_name='sheet1', rename_f
     all_cities = set()  # 收集所有城市（去重）
 
     data = {
-        'huoche': {'count': 0, 'amounts': []},
+        'huoche': {'count': 0, 'amounts': [], 'dates': []},
         'jipiao': {'count': 0, 'amounts': [], 'dates': []},
         'zhusu': {'count': 0, 'amounts': []},
         'didi_einvoice': {'count': 0, 'amounts': []},
@@ -1656,13 +1656,30 @@ def process_invoices(input_dir, output_excel=None, sheet_name='sheet1', rename_f
 
         # 特殊处理火车票城市
         elif ftype == 'huoche':
+            # 提取日期（只提取乘车日期，过滤开票日期）
+            h_dates = []
+            with pdfplumber.open(filepath) as pdf:
+                text = ''
+                for page in pdf.pages:
+                    text += page.extract_text() or ''
+            # 火车票乘车日期特征: YYYY年MM月DD日 HH:MM开
+            travel_pattern = r'(\d{4}年\d{1,2}月\d{1,2}日)\s+\d{1,2}:\d{2}开'
+            matches = re.findall(travel_pattern, text)
+            for m in matches:
+                try:
+                    d = datetime.strptime(m, '%Y年%m月%d日')
+                    h_dates.append(d)
+                except ValueError:
+                    pass
+            if h_dates:
+                data['huoche']['dates'].extend(h_dates)
             # 提取城市
             cities, city_raw_text = extract_cities_from_pdf(filepath, 'huoche')
             if cities:
                 all_cities.update(cities)
-                print(f"  {filename}: 金额¥{amount}, 城市: {cities}")
+                print(f"  {filename}: 金额¥{amount}, 日期: {[d.strftime('%Y-%m-%d') for d in h_dates]}, 城市: {cities}")
             else:
-                print(f"  {filename}: 金额¥{amount}")
+                print(f"  {filename}: 金额¥{amount}, 日期: {[d.strftime('%Y-%m-%d') for d in h_dates]}")
 
         else:
             print(f"  {filename}: 金额¥{amount}")
@@ -1700,9 +1717,12 @@ def process_invoices(input_dir, output_excel=None, sheet_name='sheet1', rename_f
     total_didi = data['didi_einvoice']['count'] + data['didi_trip']['count']
     total_toll = data['toll_einvoice']['count'] + data['toll_trip']['count']
 
-    # 保存日期对象供后续使用
-    earliest_date_obj = min(data['jipiao']['dates']) if data['jipiao']['dates'] else None
-    latest_date_obj = max(data['jipiao']['dates']) if data['jipiao']['dates'] else None
+    # 保存日期对象供后续使用（仅汇总机票和火车票的日期）
+    all_dates = []
+    all_dates.extend(data['jipiao']['dates'])
+    all_dates.extend(data['huoche']['dates'])
+    earliest_date_obj = min(all_dates) if all_dates else None
+    latest_date_obj = max(all_dates) if all_dates else None
 
     # 处理城市信息：转换为列表并排序，用中文顿号连接
     sorted_cities = sorted(list(all_cities))
@@ -1998,7 +2018,10 @@ def write_to_excel(excel_path, sheet_name, summary, date_objects=None):
     local_transport_count = summary['didi_count'] + summary.get('toll_count', 0)
     if date_objects and date_objects.get('earliest') and date_objects.get('latest'):
         trip_days = (date_objects['latest'] - date_objects['earliest']).days + 1
-        max_allowable = trip_days * 80
+        if trip_days <= 1:
+            max_allowable = trip_days * 160
+        else:
+            max_allowable = trip_days * 80
         f10_value = min(local_transport_amount, max_allowable)
         print(f"\n  F10计算: 实际金额¥{local_transport_amount}, 差旅天数{trip_days}天, 上限¥{max_allowable}, 取较小值¥{f10_value}")
     else:
