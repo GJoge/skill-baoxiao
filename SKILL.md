@@ -33,7 +33,7 @@ fi
 
 ## 执行流程
 
-采用三阶段模型： 提取 → 写入 → 合并
+采用四阶段模型： 提取 → 写入 → 合并 → 清理归档
 
 以下命令示例均假设**当前工作目录为 skill 根目录**，因此统一使用相对路径：
 - 处理脚本：`scripts/invoice_processor.py`
@@ -100,9 +100,21 @@ python3 scripts/invoice_processor.py \
   --input-dir 发票 --work-dir . --merge-pdfs
 ```
 
+### 阶段4: 清理归档（--cleanup）
+
+在合并完成后执行，做两件事：
+
+1. **删除临时文件**：删除 `biaoge.pdf` 和 `shenpi.pdf`（阶段3产生的中间文件）
+2. **合并证明文件**：检查工作目录下是否存在 `证明` 文件夹，如果存在，将其中的所有 PDF 文件按文件名顺序合并到 `汇总打印.pdf` 末尾
+
+```bash
+python3 scripts/invoice_processor.py \
+  --work-dir . --cleanup
+```
+
 ### 一键执行（--auto）
 
-无警告时自动完成三阶段：
+无警告时自动完成四阶段：
 
 ```bash
 python3 scripts/invoice_processor.py \

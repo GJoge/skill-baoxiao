@@ -2642,7 +2642,7 @@ if __name__ == '__main__':
     import argparse
 
     parser = argparse.ArgumentParser(
-        description='报销发票处理工具 - 三阶段执行',
+        description='报销发票处理工具 - 四阶段执行',
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 执行流程:
@@ -2654,6 +2654,9 @@ if __name__ == '__main__':
 
   阶段3 - 合并PDF:   python3 invoice_processor.py --merge-pdfs [--work-dir .]
                       转换并合并所有PDF
+
+  阶段4 - 清理归档: python3 invoice_processor.py --work-dir . --cleanup
+                      删除临时文件，合并证明文件夹PDF
 
 一键执行（无警告时自动完成，有警告时生成报告）:
   python3 invoice_processor.py --input-dir 发票 --output-excel biaoge.xlsx --auto
@@ -2678,6 +2681,7 @@ if __name__ == '__main__':
     parser.add_argument('--city-units', help='城市到单位的映射，格式: "北京:总部,上海:分公司"')
     parser.add_argument('--config', default='config.yaml', help='配置文件路径（默认: config.yaml）')
     parser.add_argument('--force-mark', action='store_true', help='强制重新标记交易单号（忽略已有标记）')
+    parser.add_argument('--cleanup', action='store_true', help='阶段4: 删除临时文件，合并证明文件夹PDF')
 
     args = parser.parse_args()
 
@@ -2685,7 +2689,7 @@ if __name__ == '__main__':
     config = load_config(args.config)
 
     # 默认执行逻辑
-    if not (args.extract_only or args.write_data or args.merge_pdfs or args.auto):
+    if not (args.extract_only or args.write_data or args.merge_pdfs or args.cleanup or args.auto):
         if args.input_dir and args.output_excel:
             args.auto = True  # 有输入输出路径时启用自动模式
         else:
@@ -3025,5 +3029,59 @@ if __name__ == '__main__':
             merge_pdfs(final_pdf_list, output_merge)
         else:
             print("⚠️ 没有找到任何PDF文件可合并")
+
+    # ==================== 阶段4: 清理归档 ====================
+    if args.cleanup or (args.auto and args.merge_pdfs):
+        print("\n" + "="*60)
+        print("【阶段4】清理归档")
+        print("="*60)
+
+        work_dir = args.work_dir
+
+        # 1. 删除临时PDF文件
+        print("\n[步骤1] 删除临时文件...")
+        temp_files = ['biaoge.pdf', 'shenpi.pdf']
+        deleted = 0
+        for f in temp_files:
+            fpath = os.path.join(work_dir, f)
+            if os.path.exists(fpath):
+                os.remove(fpath)
+                print(f"  ✓ 已删除: {f}")
+                deleted += 1
+        if deleted == 0:
+            print("  (无临时文件需要删除)")
+
+        # 2. 检查证明文件夹，合并其中的PDF
+        print("\n[步骤2] 合并证明文件...")
+        proof_dir = os.path.join(work_dir, '证明')
+        output_merge = os.path.join(work_dir, '汇总打印.pdf')
+
+        if os.path.isdir(proof_dir):
+            proof_pdfs = sorted([
+                os.path.join(proof_dir, f) for f in os.listdir(proof_dir)
+                if f.lower().endswith('.pdf') and os.path.isfile(os.path.join(proof_dir, f))
+            ])
+
+            if proof_pdfs:
+                print(f"  ✓ 找到证明文件夹，发现 {len(proof_pdfs)} 个PDF文件")
+                for pf in proof_pdfs:
+                    print(f"    - {os.path.basename(pf)}")
+
+                if os.path.exists(output_merge):
+                    all_pdfs = [output_merge] + proof_pdfs
+                    merge_pdfs(all_pdfs, output_merge)
+                    print(f"  ✓ 已合并到 汇总打印.pdf")
+                else:
+                    merge_pdfs(proof_pdfs, output_merge)
+                    print(f"  ✓ 证明文件已合并为 汇总打印.pdf")
+            else:
+                print("  (证明文件夹中无PDF文件)")
+        else:
+            print("  (不存在证明文件夹，跳过)")
+
+        print("\n✓ 阶段4完成: 清理归档完毕")
+
+        if args.cleanup:
+            exit(0)
 
     print(f"\n处理完成!")
