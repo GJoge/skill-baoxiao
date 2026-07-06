@@ -189,12 +189,13 @@ def load_wechat_bill_data(bill_path):
 
         # 从第2行开始读取（跳过表头）
         for row_idx, row in enumerate(ws.iter_rows(min_row=2, values_only=True), start=2):
-            # C列是第3列（索引2），F列是第6列（索引5），H列是第8列（索引7），I列是第9列（索引8）
+            # C列是第3列（索引2），F列是第6列（索引5），H列是第8列（索引7），I列是第9列（索引8），K列是第11列（索引10）
             if len(row) >= 9:
                 merchant = row[2]  # C列 - 交易对方
                 amount = row[5]  # F列 - 金额(元)
                 status = row[7]  # H列 - 当前状态
                 trans_no = row[8]  # I列 - 交易单号
+                discount_str = row[10] if len(row) > 10 else None  # K列 - 已优惠金额
 
                 # 删除已全额退款的记录（不是真实消费，不应匹配交易单号）
                 if status and '已全额退款' in str(status):
@@ -225,35 +226,44 @@ def load_wechat_bill_data(bill_path):
                     else:
                         amount_val = abs(float(amount))
 
+                    # 修正金额：加上K列的已优惠金额，使金额能与发票金额匹配
+                    discount_amount = 0
+                    if discount_str:
+                        import re
+                        match = re.search(r'[¥￥](\d+\.?\d*)', str(discount_str))
+                        if match:
+                            discount_amount = float(match.group(1))
+                    corrected_amount = round(amount_val + discount_amount, 2)
+
                     # 如果存在部分退款，计算退票费并单独存储
                     if refunded_amount is not None and amount_val > 0:
-                        refund_fee = amount_val - refunded_amount
+                        refund_fee = corrected_amount - refunded_amount
                         if refund_fee > 0:
                             # 存储退票费用于匹配tuigai单据
                             if refund_fee not in refund_fee_to_trans:
                                 refund_fee_to_trans[refund_fee] = []
                             refund_fee_to_trans[refund_fee].append({
                                 'trans_no': str(trans_no).strip(),
-                                'original_amount': amount_val,
+                                'original_amount': corrected_amount,
                                 'refunded_amount': refunded_amount,
                                 'merchant': str(merchant).strip() if merchant else ''
                             })
-                            # 仍然存储原金额用于普通匹配
-                            if amount_val not in amount_to_trans:
-                                amount_to_trans[amount_val] = []
-                            amount_to_trans[amount_val].append(str(trans_no).strip())
+                            # 仍然存储修正后的金额用于普通匹配
+                            if corrected_amount not in amount_to_trans:
+                                amount_to_trans[corrected_amount] = []
+                            amount_to_trans[corrected_amount].append(str(trans_no).strip())
                             if merchant:
-                                amount_to_merchant[amount_val] = str(merchant).strip()
+                                amount_to_merchant[corrected_amount] = str(merchant).strip()
                             continue
 
                     # 只保留非零金额
-                    if amount_val > 0:
+                    if corrected_amount > 0:
                         # 使用列表存储相同金额的交易单号，解决重复金额覆盖问题
-                        if amount_val not in amount_to_trans:
-                            amount_to_trans[amount_val] = []
-                        amount_to_trans[amount_val].append(str(trans_no).strip())
+                        if corrected_amount not in amount_to_trans:
+                            amount_to_trans[corrected_amount] = []
+                        amount_to_trans[corrected_amount].append(str(trans_no).strip())
                         if merchant:
-                            amount_to_merchant[amount_val] = str(merchant).strip()
+                            amount_to_merchant[corrected_amount] = str(merchant).strip()
 
         wb.close()
         return amount_to_trans, amount_to_merchant, refund_fee_to_trans
@@ -349,6 +359,7 @@ def add_transaction_numbers_to_pdf(input_pdf, output_pdf, trans_numbers):
     """
     将交易单号添加到PDF最后一页的底部居中位置
     trans_numbers: [(编号, 交易单号), ...]
+
     """
     try:
         # 读取原始PDF
@@ -390,27 +401,26 @@ def add_transaction_numbers_to_pdf(input_pdf, output_pdf, trans_numbers):
 
         can.setFont(font_name, 10)
 
-        # 在页面底部居中添加交易单号
         # 判断是否有多个交易单号
         has_multiple = len(trans_numbers) > 1
 
-        # 计算起始y位置（根据交易单号数量）
-        # 序号小的画在上面（y坐标大），序号大的画在下面（y坐标小）
+        # 计算交易单号的起始y位置
         base_y = 30 if has_multiple else 7
         line_height = 15
-        y_pos = base_y + (len(trans_numbers) - 1) * line_height
+        trans_y_start = base_y + (len(trans_numbers) - 1) * line_height
 
+        current_y = trans_y_start
+
+        # 绘制交易单号
         for idx, trans_no in trans_numbers:
-            # 只有多个交易单号时才显示序号
             if has_multiple:
                 text = f"[{idx}] 交易单号: {trans_no}"
             else:
                 text = f"交易单号: {trans_no}"
-            # 计算文本宽度，实现居中
             text_width = can.stringWidth(text, font_name, 10)
-            x_pos = (page_width - text_width) / 2  # 居中位置
-            can.drawString(x_pos, y_pos, text)
-            y_pos -= line_height  # 向上移动
+            x_pos = (page_width - text_width) / 2
+            can.drawString(x_pos, current_y, text)
+            current_y -= line_height
 
         can.save()
         packet.seek(0)
@@ -446,7 +456,7 @@ def add_transaction_numbers_to_pdf(input_pdf, output_pdf, trans_numbers):
         return False
 
 
-def match_and_add_transaction_numbers(input_dir, work_dir, report_path='data_report.json', force_mark=False):
+def match_and_add_transaction_numbers(input_dir, work_dir, report_path='data_report.json', force_mark=False, config=None, auto_mode=False):
     """
     主函数：查找微信支付账单，匹配发票金额，添加交易单号到PDF
     使用data_report中的file_details数据，避免重复提取金额
@@ -456,6 +466,8 @@ def match_and_add_transaction_numbers(input_dir, work_dir, report_path='data_rep
         work_dir: 工作目录
         report_path: 报告文件路径
         force_mark: 是否强制重新标记（忽略已有标记）
+        config: 配置字典
+        auto_mode: 自动模式
 
     返回: 处理是否成功的布尔值
     """
@@ -600,7 +612,13 @@ def match_and_add_transaction_numbers(input_dir, work_dir, report_path='data_rep
                 amount, _ = extract_amount_from_pdf(pdf_path, ftype)
             if amount:
                 # tuigai类型使用退票费映射匹配
-                if ftype == 'tuigai':
+                if ftype == 'jipiao':
+                    # 机票：先匹配交易单号
+                    trans_no = take_first_transaction(amount)
+                    if trans_no:
+                        trans_numbers.append((1, trans_no))
+
+                elif ftype == 'tuigai':
                     trans_no = take_refund_transaction(amount)
                     if trans_no:
                         trans_numbers.append((1, trans_no))
@@ -630,6 +648,8 @@ def match_and_add_transaction_numbers(input_dir, work_dir, report_path='data_rep
         print("  请人工核对这些匹配是否正确。")
 
     return matched_count > 0
+
+
 
 
 # ============ PDF处理函数 ============
@@ -825,10 +845,15 @@ def build_invoice_rename(ftype, count):
 
 # ============ 城市提取函数 ============
 
-def extract_cities_from_pdf(pdf_path, inv_type):
+def extract_cities_from_pdf(pdf_path, inv_type, exclude_beijing=True):
     """
-    从机票或火车票PDF中提取出发站和到达站城市名称（排除北京）
+    从机票或火车票PDF中提取出发站和到达站城市名称（默认排除北京）
     优先使用pdfplumber提取文本，失败后再使用OCR
+
+    Args:
+        pdf_path: PDF文件路径
+        inv_type: 发票类型
+        exclude_beijing: 是否排除北京（默认True）
     返回: (cities_list, raw_text)
     """
     text = ""
@@ -886,8 +911,8 @@ def extract_cities_from_pdf(pdf_path, inv_type):
         # 常见格式："自: 绵阳 南郊" "至: 北京 大兴" 或 "自: PKX 北京" "至:CTU 成都"
 
         for line in text.split('\n'):
-            # 匹配 "自: 绵阳 南郊" 或 "自: PKX 北京" 这种格式
-            if '自' in line and ':' in line:
+            # 匹配 "自: 绵阳 南郊" 或 "自：PKX 北京" 这种格式（兼容全/半角冒号）
+            if '自' in line and (':' in line or '：' in line):
                 # 尝试匹配 "自: 词1 词2"，优先取中文词2（如果有的话）
                 match = re.search(r'自\s*[:：]\s*(\S+)\s+(\S+)', line)
                 if match:
@@ -907,8 +932,8 @@ def extract_cities_from_pdf(pdf_path, inv_type):
                         if is_valid_city_token(city):
                             cities.add(city)
 
-            # 匹配 "至: 北京 大兴" 或 "至:CTU 成都" 这种格式
-            if '至' in line and ':' in line:
+            # 匹配 "至: 北京 大兴" 或 "至：CTU 成都" 这种格式（兼容全/半角冒号）
+            if '至' in line and (':' in line or '：' in line):
                 # 尝试匹配 "至: 词1 词2"，优先取中文词2（如果有的话）
                 match = re.search(r'至\s*[:：]\s*(\S+)\s+(\S+)', line)
                 if match:
@@ -1009,13 +1034,13 @@ def extract_cities_from_pdf(pdf_path, inv_type):
                     if is_valid_city_token(city):
                         cities.add(city)
 
-    # 过滤掉"北京"及其变体
+    # 过滤掉"北京"及其变体（可在调用时通过 exclude_beijing=False 禁用）
     filtered_cities = set()
     for city in cities:
-        # 排除北京及其常见变体
-        if city not in ['北京', '北京市', '北京南', '北京北', '北京东', '北京西',
-                        '北京南站', '北京北站', '北京东站', '北京西站', '首都']:
-            filtered_cities.add(city)
+        if exclude_beijing and city in ['北京', '北京市', '北京南', '北京北', '北京东', '北京西',
+                                        '北京南站', '北京北站', '北京东站', '北京西站', '首都']:
+            continue
+        filtered_cities.add(city)
 
     return list(filtered_cities), text
 
@@ -1121,6 +1146,9 @@ def extract_amount_from_pdf(pdf_path, inv_type=None):
             return max(valid_numbers), '最大金额数字'
 
     return None, '未找到'
+
+
+
 
 
 def extract_dates_with_pdfplumber(pdf_path, exclude_tiankai=True):
@@ -2238,16 +2266,19 @@ def fill_docx_document(docx_path, cities, earliest_date, latest_date, city_unit_
 
             return '  '.join(parts)
 
-        # 准备日期字符串
-        if isinstance(earliest_date, datetime):
-            earliest_str = earliest_date.strftime('%Y年%m月%d日')
-        else:
-            earliest_str = str(earliest_date) if earliest_date else ''
+        # 准备日期字符串（支持datetime对象或"YYYY-MM-DD"格式字符串）
+        def format_date_cn(d):
+            if isinstance(d, datetime):
+                return d.strftime('%Y年%m月%d日')
+            if isinstance(d, str) and d:
+                try:
+                    return datetime.strptime(d.strip(), '%Y-%m-%d').strftime('%Y年%m月%d日')
+                except ValueError:
+                    pass
+            return str(d) if d else ''
 
-        if isinstance(latest_date, datetime):
-            latest_str = latest_date.strftime('%Y年%m月%d日')
-        else:
-            latest_str = str(latest_date) if latest_date else ''
+        earliest_str = format_date_cn(earliest_date)
+        latest_str = format_date_cn(latest_date)
 
         date_range_str = f"{earliest_str}至{latest_str}"
 
@@ -2331,8 +2362,14 @@ def fill_docx_document(docx_path, cities, earliest_date, latest_date, city_unit_
                         # 从第1列开始填写（跳过第0列的"起止时间"标题）
                         for next_cell_idx in range(1, len(row.cells)):
                             next_cell = row.cells[next_cell_idx]
-                            # 检查是否包含日期格式（年...至/到）
-                            if '年' in next_cell.text and ('至' in next_cell.text or '到' in next_cell.text):
+                            cell_text_content = next_cell.text.strip()
+                            # 跳过空单元格
+                            if not cell_text_content:
+                                continue
+                            # 检查是否包含日期占位内容（含"至"/"到"），或无其他明显非日期内容
+                            has_year = '年' in cell_text_content
+                            has_zhi = '至' in cell_text_content or '到' in cell_text_content
+                            if has_year or has_zhi:
                                 original_text = next_cell.text
                                 next_cell.text = date_range_str
                                 set_cell_format(next_cell)
@@ -2906,7 +2943,7 @@ if __name__ == '__main__':
 
         # [步骤0] 微信支付账单处理 - 在转换前执行
         if args.input_dir:
-            match_and_add_transaction_numbers(args.input_dir, work_dir, args.report, args.force_mark)
+            match_and_add_transaction_numbers(args.input_dir, work_dir, args.report, args.force_mark, config=config, auto_mode=args.auto)
         else:
             print("\n[步骤0] 跳过微信支付账单处理（未提供 --input-dir）")
 

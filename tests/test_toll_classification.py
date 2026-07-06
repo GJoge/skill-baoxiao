@@ -136,7 +136,7 @@ def test_didi_trip_matches_transaction_before_summary_invoice_with_same_amount()
 
         calls = []
 
-        def fake_add(input_pdf, output_pdf, trans_numbers):
+        def fake_add(input_pdf, output_pdf, trans_numbers, header_text=None):
             calls.append((os.path.basename(input_pdf), list(trans_numbers)))
             return True
 
@@ -172,7 +172,7 @@ def test_existing_transaction_mark_does_not_consume_bill_transaction():
 
         calls = []
 
-        def fake_add(input_pdf, output_pdf, trans_numbers):
+        def fake_add(input_pdf, output_pdf, trans_numbers, header_text=None):
             calls.append((os.path.basename(input_pdf), list(trans_numbers)))
             return True
 
