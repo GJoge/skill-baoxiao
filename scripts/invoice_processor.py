@@ -248,12 +248,12 @@ def load_wechat_bill_data(bill_path):
                                 'refunded_amount': refunded_amount,
                                 'merchant': str(merchant).strip() if merchant else ''
                             })
-                            # 仍然存储修正后的金额用于普通匹配
-                            if corrected_amount not in amount_to_trans:
-                                amount_to_trans[corrected_amount] = []
-                            amount_to_trans[corrected_amount].append(str(trans_no).strip())
+                            # 存储退款后的净金额（原金额 - 已退款金额）用于普通匹配
+                            if refund_fee not in amount_to_trans:
+                                amount_to_trans[refund_fee] = []
+                            amount_to_trans[refund_fee].append(str(trans_no).strip())
                             if merchant:
-                                amount_to_merchant[corrected_amount] = str(merchant).strip()
+                                amount_to_merchant[refund_fee] = str(merchant).strip()
                             continue
 
                     # 只保留非零金额
